@@ -72,9 +72,23 @@ class JobStore:
         """Record a status transition reported by the running pipeline."""
         self.update_fields(job_id, status=status, message=message, heartbeat_at=utcnow())
 
-    def finish(self, job_id: str, status: str, message: str, result_file: str = "") -> None:
-        """Record the terminal state of a job."""
-        self.update_fields(job_id, status=status, message=message, result_file=result_file)
+    def finish(
+        self, job_id: str, status: str, message: str, result_file: str = "", error_detail: str = ""
+    ) -> None:
+        """Record the terminal state of a job.
+
+        ``message`` is the short text shown in the UI; ``error_detail`` holds
+        the full traceback of a failed job for operators.
+        """
+        self.update_fields(
+            job_id, status=status, message=message, result_file=result_file, error_detail=error_detail
+        )
+
+    def get_error_detail(self, job_id: str) -> Optional[str]:
+        """Return a job's stored traceback ("" if none), or None if the job doesn't exist."""
+        with self.session() as session:
+            job = session.get(Job, job_id)
+            return job.error_detail if job else None
 
     def touch_owned(self, owner: str) -> None:
         """Refresh the heartbeat of every active job owned by this replica."""

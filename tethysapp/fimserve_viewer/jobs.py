@@ -6,6 +6,7 @@ every job this replica owns (queued or running), so any number of portal
 replicas can run a manager safely.
 """
 
+import logging
 import os
 import socket
 import threading
@@ -21,6 +22,20 @@ JobRunner = Callable[[dict, Callable[[str, str], None]], str]
 
 HEARTBEAT_SECONDS = 30
 STALE_TIMEOUT_SECONDS = 180
+
+# Module-level logger. Its name is "tethysapp.fimserve_viewer.jobs", so the
+# portal's logging configuration routes these messages to the server log.
+logger = logging.getLogger(__name__)
+
+
+def short_error_message(exc: Exception) -> str:
+    """One-line, user-facing summary of an exception (no traceback).
+
+    Includes the exception type so messages are never blank: some exceptions,
+    such as ``KeyError()``, have an empty ``str(exc)``.
+    """
+    text = str(exc).strip()
+    return f"{type(exc).__name__}: {text}" if text else type(exc).__name__
 
 
 def worker_identity() -> str:
@@ -73,12 +88,18 @@ class JobManager:
             result_file = runner(job, progress)
             self.store.finish(job_id, JobStatus.SUCCESS, "Flood map generated successfully.", result_file)
         except Exception as exc:
-            # Only the short message is saved for the UI, so print the full
-            # traceback to the server terminal; it shows the exact file and
-            # line that failed, which is what you need to debug a job error.
-            print(f"[fimserve_viewer] Job {job_id} failed:", flush=True)
-            traceback.print_exc()
-            self.store.finish(job_id, JobStatus.ERROR, str(exc))
+            # Log first, so the traceback reaches the server log even if
+            # saving to the database below also fails. logger.exception()
+            # attaches the full traceback of the exception being handled.
+            logger.exception("Job %s (%s, HUC8 %s) failed", job_id, job.get("kind"), job.get("huc8"))
+            # The UI gets a short message; operators get the full traceback
+            # in the job's error_detail column.
+            self.store.finish(
+                job_id,
+                JobStatus.ERROR,
+                short_error_message(exc),
+                error_detail=traceback.format_exc(),
+            )
 
     def get(self, job_id: str) -> Optional[dict]:
         return self.store.get(job_id)
