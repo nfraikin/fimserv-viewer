@@ -9,6 +9,7 @@ replicas can run a manager safely.
 import os
 import socket
 import threading
+import traceback
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import suppress
 from typing import Callable, Optional, Tuple
@@ -72,6 +73,11 @@ class JobManager:
             result_file = runner(job, progress)
             self.store.finish(job_id, JobStatus.SUCCESS, "Flood map generated successfully.", result_file)
         except Exception as exc:
+            # Only the short message is saved for the UI, so print the full
+            # traceback to the server terminal; it shows the exact file and
+            # line that failed, which is what you need to debug a job error.
+            print(f"[fimserve_viewer] Job {job_id} failed:", flush=True)
+            traceback.print_exc()
             self.store.finish(job_id, JobStatus.ERROR, str(exc))
 
     def get(self, job_id: str) -> Optional[dict]:

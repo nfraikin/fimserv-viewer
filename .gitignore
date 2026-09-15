@@ -28,3 +28,9 @@ workspaces/
 .vscode/
 .idea/
 .DS_Store
+
+# Portal-specific service links (local dev machine, not shared)
+services.yml
+
+# Session handoff notes (working scratch, not project docs)
+handoff.md

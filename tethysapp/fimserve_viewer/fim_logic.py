@@ -69,6 +69,49 @@ def _patched_setup_directories():
     return code_dir, data_dir, output_dir
 
 
+def _patched_format_datetime64(s):
+    """Replacement for ``teehr.models.pandera_dataframe_schemas.format_datetime64``.
+
+    This is the fix for the "Can only use .dt accessor with datetimelike
+    values" error that made every NWM flood-map job fail in Step 2.
+
+    What goes wrong upstream (teehr 0.5.0, which FIMserv pins):
+      * ``teehr.fetching.nwm.retrospective_points.da_to_df`` fills the
+        ``reference_time`` column with ``np.nan``, so that column is a plain
+        float column, not a datetime column.
+      * Before writing the parquet file, teehr validates the DataFrame with a
+        pandera schema whose ``reference_time`` column has this function as a
+        "parser". The original function runs ``s.dt.tz_localize(None)``
+        straight away.
+      * Newer pandera releases run a column's parsers *before* converting the
+        column to its declared dtype. So the parser receives the float column,
+        and ``.dt`` (which only exists for datetime columns) raises.
+
+    The fix, matching what teehr itself later did upstream: if the Series is
+    not already a datetime Series, convert it with ``pd.to_datetime`` first.
+    An all-NaN column simply becomes all-NaT (datetime "missing").
+    """
+    import pandas as pd
+
+    if not pd.api.types.is_datetime64_any_dtype(s):
+        s = pd.to_datetime(s, utc=True)
+    s = s.dt.tz_localize(None)
+    return s.astype("datetime64[ms]")
+
+
+def _patch_teehr():
+    """Install ``_patched_format_datetime64`` into teehr (safe to call repeatedly).
+
+    teehr's schema functions look ``format_datetime64`` up by name each time a
+    schema is built, so rebinding the module attribute is enough. This must run
+    before any teehr fetch: FIMserv's Step 2 and the hydrograph endpoint both
+    fetch through teehr.
+    """
+    import teehr.models.pandera_dataframe_schemas as _schemas  # type: ignore
+
+    _schemas.format_datetime64 = _patched_format_datetime64
+
+
 def _load_fimserve():
     """Import FIMserv submodules on demand.
 
@@ -94,6 +137,10 @@ def _load_fimserve():
             getNWMretrospectivedata,
         )
         from fimserve.runFIM import runOWPHANDFIM, runfim  # type: ignore
+
+        # Fix the `.dt` accessor crash inside teehr's parquet validation.
+        # See _patched_format_datetime64 for the full explanation.
+        _patch_teehr()
     except Exception as exc:  # pragma: no cover - missing-dep path
         raise RuntimeError(
             "FIMserv is not available. Install the app's dependencies "
@@ -1106,6 +1153,8 @@ def build_hydrograph_payload(huc8: str, date_str: str) -> dict:
         )
 
     import teehr.fetching.nwm.retrospective_points as nwm_retro
+
+    _patch_teehr()  # same `.dt` accessor fix as flood-map Step 2
 
     retro_dir = HUC_dir / "discharge" / "nwm30_retrospective"
     retro_dir.mkdir(parents=True, exist_ok=True)
