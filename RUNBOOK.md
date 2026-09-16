@@ -98,6 +98,12 @@ from filling up, the app caps the total hydrofabric footprint:
   so previews/labels/downloads of past maps keep working. An evicted HUC is
   re-downloaded automatically on its next request (`aws s3 sync` fetches
   only the missing files). Set to `0` to disable eviction.
+- `FIMSERVE_CACHE_MIN_IDLE_MINUTES` (default **30**) - a HUC is never
+  evicted while something is using it. Every HUC with an active job is
+  protected outright (any replica), and this setting protects a HUC that was
+  used recently but has no job record, such as one driven by the
+  synchronous endpoints. Raise it if a generation can take longer than 30
+  minutes on your hardware; `0` leaves only the active-job protection.
 - `FIMSERV_ROOT` - where all FIMserv data lives. **Optional**: defaults to
   `/var/tmp/fimserve_viewer` (disk-backed, survives reboots, OS may age out
   stale files - fine, everything here is a re-downloadable cache), or the
@@ -107,6 +113,12 @@ from filling up, the app caps the total hydrofabric footprint:
 
 **Budget rule of thumb:** allow `FIMSERVE_CACHE_MAX_GB` + ~1.5 GB headroom
 per concurrent first-time generation. With the defaults, ~5 GB free is safe.
+
+Eviction never deletes a hydrofabric that is in use, so the cap can be
+exceeded when several generations run at once. The portal log says so
+("still N GiB, over its N GiB cap: everything else is in use") along with
+which HUCs it considered and which it protected - that line means the cap is
+too low for the concurrency, not that eviction is broken.
 
 ## External data (no credentials)
 
