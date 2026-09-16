@@ -30,7 +30,6 @@ Notable differences from the Flask original:
 """
 
 import base64
-import json
 import logging
 import os
 import re
@@ -137,8 +136,6 @@ def _load_fimserve():
     prev_cwd = os.getcwd()
     try:
         os.chdir(root)
-        import fimserve.datadownload as _datadownload  # type: ignore
-        import fimserve.runFIM as _runFIM  # type: ignore
         from fimserve.datadownload import DownloadHUC8  # type: ignore
         from fimserve.streamflowdata.nwmretrospective import (  # type: ignore
             getNWMretrospectivedata,

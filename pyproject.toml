@@ -89,3 +89,13 @@ include = ["*"]
     "resources/**/*",
     "workspaces/**/*"
 ]
+
+# Lint config for CI (.github/workflows/ci.yml). Ruff's newer releases
+# enable a much broader default rule set; pin to the classic core
+# (pyflakes + pycodestyle errors) so the check catches real bugs -
+# undefined names, unused imports, syntax errors - without a style fight.
+[tool.ruff]
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F"]
