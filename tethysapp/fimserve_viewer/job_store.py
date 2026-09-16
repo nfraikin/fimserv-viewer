@@ -113,6 +113,21 @@ class JobStore:
         """Return the active job with the given key, or None."""
         return self.first_active_dict(Job.key == key)
 
+    def active_huc8s(self) -> set:
+        """Return the HUC8s that have an active job, in any replica.
+
+        Hydrofabric eviction reads this to know which HUCs it must not
+        delete out from under a running job (issue #6). Callers sweep stale
+        jobs first, so a replica that died mid-job does not pin its HUC.
+        """
+        with self.session() as session:
+            rows = (
+                session.query(Job.huc8)
+                .filter(Job.status.in_(JobStatus.ACTIVE))
+                .distinct()
+            )
+            return {huc8 for (huc8,) in rows}
+
     def find_active_for_huc(self, huc8: str) -> Optional[dict]:
         """Return the active job for a HUC8, or None."""
         return self.first_active_dict(Job.huc8 == huc8)

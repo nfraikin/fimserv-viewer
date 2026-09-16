@@ -24,7 +24,9 @@ Notable differences from the Flask original:
   * Hydrofabric disk usage is capped: `enforce_cache_budget` (implemented
     in `manage_cache.py`) evicts the least-recently-used HUC's heavy
     hydrofabric (~700-900 MB each) before a new download when the total
-    exceeds `FIMSERVE_CACHE_MAX_GB` (default 3).
+    exceeds `FIMSERVE_CACHE_MAX_GB` (default 3). A HUC another job or
+    request is working on is never evicted, which is why each step below
+    calls `mark_huc_in_use`.
 """
 
 import base64
@@ -471,6 +473,7 @@ def _parse_generate_flood_json_body(data: dict) -> Tuple[str, str]:
 # ---------------------------------------------------------------------------
 from .manage_cache import (  # noqa: E402  (needs _candidate_fimserv_roots above)
     enforce_cache_budget,
+    mark_huc_in_use,
     prune_huc_hydrofabric,
 )
 
@@ -552,11 +555,19 @@ def _run_flood_step1_download_huc8(huc8: str) -> None:
     """
     enforce_cache_budget(protect_huc=huc8)
 
+    # Marked twice on purpose: before, so a re-download of a HUC that is
+    # already partly on disk is protected from another process's eviction
+    # while `aws s3 sync` runs; after, because a first-time download has no
+    # flood_<huc8>/ to hold the marker until the sync creates it.
+    mark_huc_in_use(huc8)
+
     download_error: Optional[Exception] = None
     try:
         DownloadHUC8(huc8, version="4.8")
     except Exception as e:  # verified against the artifacts below
         download_error = e
+
+    mark_huc_in_use(huc8)
 
     missing = _missing_step1_artifacts(huc8)
     if not missing:
@@ -585,6 +596,7 @@ def _run_flood_step1_download_huc8(huc8: str) -> None:
 
 
 def _run_flood_step2_nwm_streamflow(huc8: str, datetime_str: str) -> None:
+    mark_huc_in_use(huc8)
     getNWMretrospectivedata(huc_event_dict={huc8: [datetime_str]})
 
 
@@ -596,6 +608,7 @@ def _run_flood_step3_hand_inundation(huc8: str, datetime_str: Optional[str] = No
     downloaded and re-runs inundation for each, so without this each request
     silently regenerates all past events for the HUC too.
     """
+    mark_huc_in_use(huc8)
     if datetime_str:
         date_obj = datetime.strptime(datetime_str, "%Y-%m-%d %H:%M:%S")
         day_key = date_obj.strftime("%Y%m%d")
@@ -1190,6 +1203,8 @@ def run_custom_discharge_flood_map(huc8: str, discharge_val: float) -> Path:
                 f"feature_IDs.csv not found after download. HUC8 {huc8} may not be supported."
             )
 
+    mark_huc_in_use(huc8)
+
     fid_df = pd.read_csv(feature_ids_path)
     feature_ids = fid_df["feature_id"].astype(int).tolist()
 
@@ -1362,6 +1377,7 @@ __all__ = [
     "_line_midpoint_for_label",
     "_parse_generate_flood_json_body",
     "enforce_cache_budget",
+    "mark_huc_in_use",
     "prune_huc_hydrofabric",
     "_missing_step1_artifacts",
     "_run_flood_step1_download_huc8",
