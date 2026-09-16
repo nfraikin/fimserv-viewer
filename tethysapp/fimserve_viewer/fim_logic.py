@@ -1097,13 +1097,20 @@ def run_custom_discharge_flood_map(huc8: str, discharge_val: float) -> Path:
     expected_basename = f"CustomQ_{discharge_sanitized}_{huc8}_inundation.tif"
     map_file = output_subdir / expected_basename
 
+    # Only the raster named for *this* discharge counts. The old code fell back
+    # to the first CustomQ_*.tif in the dir, which is a leftover from an earlier
+    # run at a different discharge whenever this run produced nothing - and the
+    # caller publishes whatever comes back as this job's result (see issue #5).
     if not map_file.exists():
-        matches = list(output_subdir.glob(f"CustomQ_*_{huc8}_inundation.tif"))
-        map_file = matches[0] if matches else None  # type: ignore[assignment]
-
-    if not map_file or not map_file.exists():
+        present = (
+            sorted(q.name for q in output_subdir.glob("*_inundation.tif"))
+            if output_subdir.exists()
+            else []
+        )
         raise FileNotFoundError(
-            f"Flood map not found at {output_subdir}. "
+            f"No inundation raster was produced for discharge {discharge_val} "
+            f"in HUC8 {huc8}. Expected {expected_basename} in {output_subdir}. "
+            f"Other rasters present (not used): {present or 'none'}. "
             "Check the portal terminal for inundation errors."
         )
 

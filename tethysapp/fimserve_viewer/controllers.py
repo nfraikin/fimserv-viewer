@@ -30,20 +30,33 @@ from tethys_sdk.routing import controller
 from . import fim_logic
 from .app import App
 from .results import (
-    custom_pattern,
+    custom_download_name,
     labels_name_for_tif,
     nwm_pattern,
     results,
-    sanitize_discharge,
 )
 
 
 def find_custom_map_key(huc8, discharge_val):
-    """Key of the stored custom map for a discharge, or any custom map for the HUC8."""
-    key = results.find(huc8, custom_pattern(huc8, discharge_val))
-    if key is None:
-        key = results.find(huc8, f"CustomQ_*_{huc8}_inundation.tif")
-    return key
+    """Key of the stored custom map for exactly this discharge, else None."""
+    return results.find_custom(huc8, discharge_val)
+
+
+def no_custom_map_response(huc8, discharge_str):
+    """404 for a custom discharge with no result, naming what is available."""
+    available = results.custom_discharges(huc8)
+    listed = ", ".join(f"{v:g}" for v in available) if available else "none"
+    return JsonResponse(
+        {
+            "status": "error",
+            "message": (
+                f"No custom flood map found for HUC8 {huc8} with discharge "
+                f"{discharge_str}. Available discharges for this HUC8: {listed}."
+            ),
+            "available_discharges": available,
+        },
+        status=404,
+    )
 
 
 def reclassified_response(key, download_name):
@@ -419,16 +432,7 @@ def flood_map_preview_custom(request, huc8, discharge_str):
         discharge_val = float(discharge_str)
         key = find_custom_map_key(huc8, discharge_val)
         if key is None:
-            return JsonResponse(
-                {
-                    "status": "error",
-                    "message": (
-                        f"No custom flood map found for HUC8 {huc8} "
-                        f"with discharge {discharge_str}"
-                    ),
-                },
-                status=404,
-            )
+            return no_custom_map_response(huc8, discharge_str)
 
         with results.local(key) as map_file:
             out = fim_logic._tif_to_preview_png(map_file, huc8=huc8)
@@ -492,25 +496,18 @@ def get_flood_map_custom(request, huc8, discharge_str):
         )
 
     try:
-        discharge_sanitized = sanitize_discharge(discharge_val)
         key = find_custom_map_key(huc8, discharge_val)
         if key is None:
-            return JsonResponse(
-                {
-                    "status": "error",
-                    "message": (
-                        f"No custom flood map found for HUC8 {huc8} "
-                        f"with discharge {discharge_str}"
-                    ),
-                },
-                status=404,
-            )
+            return no_custom_map_response(huc8, discharge_str)
 
+        # The download is named after the discharge the stored raster was
+        # computed from, not the one that was requested, so the filename can
+        # never assert a discharge the pixels did not come from.
         if do_reclass:
             return reclassified_response(
-                key, f"{huc8}_customQ{discharge_sanitized}_reclassified.tif"
+                key, custom_download_name(huc8, key, "_reclassified")
             )
-        return results.response(key, download_name=f"{huc8}_customQ{discharge_sanitized}.tif")
+        return results.response(key, download_name=custom_download_name(huc8, key))
     except Exception as exc:
         return JsonResponse(
             {"status": "error", "message": str(exc)}, status=500
