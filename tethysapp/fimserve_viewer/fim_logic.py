@@ -29,12 +29,17 @@ Notable differences from the Flask original:
 
 import base64
 import json
+import logging
 import os
 import re
 import tempfile
 from datetime import datetime
 from pathlib import Path
 from typing import Optional, Tuple
+
+# Module-level logger ("tethysapp.fimserve_viewer.fim_logic"), so portal
+# operators can tune this module's verbosity independently of the rest.
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # FIMserv imports.
@@ -327,16 +332,24 @@ def _find_inundation_file(huc8: str, pattern: str) -> Optional[Path]:
     return all_matches[0]
 
 
+def _candidate_flood_dirs(huc8: str) -> list[Path]:
+    """Per-HUC ``output/flood_<huc>/`` dirs across all candidate roots.
+
+    This is the directory FIMserv writes the whole run into: the
+    hydrofabric lives in the ``<huc>/`` subdirectory, while
+    ``feature_IDs.csv`` and the ``<huc>_inundation/`` rasters sit
+    alongside it.
+    """
+    return [r / "output" / f"flood_{huc8}" for r in _candidate_fimserv_roots()]
+
+
 def _candidate_huc_dirs(huc8: str) -> list[Path]:
     """Return candidate FIMserv ``output/flood_<huc>/<huc>/`` dirs.
 
     These hold per-HUC artifacts like ``wbd.gpkg`` and
     ``nwm_subset_streams.gpkg``.
     """
-    return [
-        r / "output" / f"flood_{huc8}" / huc8
-        for r in _candidate_fimserv_roots()
-    ]
+    return [d / huc8 for d in _candidate_flood_dirs(huc8)]
 
 
 def _find_huc_file(huc8: str, relative: str) -> Optional[Path]:
@@ -466,12 +479,109 @@ from .manage_cache import (  # noqa: E402  (needs _candidate_fimserv_roots above
 # Three flood-generation steps. No cwd manipulation: `_load_fimserve` pins
 # FIMserv's setup_directories to FIMSERV_ROOT.
 # ---------------------------------------------------------------------------
+# Artifacts `DownloadHUC8` must leave on disk for Steps 2 and 3 to work.
+# Paths are relative to ``output/flood_<huc8>/``:
+#   <huc8>/branch_ids.csv  - the branch list Step 3 iterates over
+#   <huc8>/hydrotable.csv  - discharge -> stage lookup used by inundation
+#   <huc8>/branches/       - the per-branch HAND rasters (the bulk of the sync)
+#   feature_IDs.csv        - reach IDs Step 2 fetches NWM streamflow for
+# `branch_ids.csv` is kept by cache eviction, the rest of the hydrofabric is
+# not, so this set is also what a re-download has to restore for an evicted
+# HUC (see manage_cache._HYDROFABRIC_KEEP_FILES).
+_STEP1_REQUIRED_ARTIFACTS = (
+    "{huc8}/branch_ids.csv",
+    "{huc8}/hydrotable.csv",
+    "{huc8}/branches",
+    "feature_IDs.csv",
+)
+
+_STEP1_FAILURE_HINT = (
+    "Likely causes: the AWS CLI is not on PATH (Step 1 runs `aws s3 sync`; "
+    "check `aws --version`), no network route to s3://ciroh-owp-hand-fim, "
+    "the disk is full, or HUC8 {huc8} is not in the HAND 4.8 coverage set."
+)
+
+
+def _missing_step1_artifacts(huc8: str) -> list[str]:
+    """Return the Step 1 artifacts missing for `huc8`, or [] if all are there.
+
+    Every candidate root is checked, because FIMserv does not always honour
+    FIMSERV_ROOT (see `_candidate_fimserv_roots`). A root only counts when it
+    holds the *complete* set - a half-written tree in one root plus a
+    half-written tree in another is not a usable hydrofabric - so on failure
+    the most complete root's missing paths are reported.
+    """
+    best: Optional[list[str]] = None
+    for flood_dir in _candidate_flood_dirs(huc8):
+        missing = []
+        for relative in _STEP1_REQUIRED_ARTIFACTS:
+            path = flood_dir / relative.format(huc8=huc8)
+            # branches/ is a directory, and an empty one means the sync
+            # created the tree but transferred nothing.
+            present = (
+                (path.is_dir() and any(path.iterdir()))
+                if path.name == "branches"
+                else path.is_file()
+            )
+            if not present:
+                missing.append(str(path))
+        if not missing:
+            return []
+        if best is None or len(missing) < len(best):
+            best = missing
+    return best or []
+
+
 def _run_flood_step1_download_huc8(huc8: str) -> None:
+    """Download the HAND hydrofabric for one HUC8, then verify it landed.
+
+    What is on disk afterwards - not whether `DownloadHUC8` raised - decides
+    whether Step 1 succeeded, because the exception is unreliable in both
+    directions (issue #3):
+
+      * It raises benignly. `aws s3 sync` over an already-populated tree, or
+        a HUC that another request just downloaded, can surface an error even
+        though everything needed is present.
+      * It returns "successfully" having downloaded nothing. The classic
+        case is `aws` missing from PATH: the sync fails inside FIMserv, Step 1
+        prints a warning, and the job only dies in Step 3 with a confusing
+        "flood map generated but file not found".
+
+    Raises RuntimeError naming the missing artifact when the hydrofabric is
+    not usable, so the failure is reported where it happens.
+    """
     enforce_cache_budget(protect_huc=huc8)
+
+    download_error: Optional[Exception] = None
     try:
         DownloadHUC8(huc8, version="4.8")
-    except Exception as e:
-        print(f"Warning: HUC8 download issue (may already exist): {e}")
+    except Exception as e:  # verified against the artifacts below
+        download_error = e
+
+    missing = _missing_step1_artifacts(huc8)
+    if not missing:
+        if download_error is not None:
+            logger.debug(
+                "HUC8 %s download raised %r, but every expected artifact is "
+                "present - treating it as an already-downloaded HUC.",
+                huc8,
+                download_error,
+                exc_info=download_error,
+            )
+        return
+
+    message = (
+        f"Step 1 (HAND download) did not produce a usable hydrofabric for "
+        f"HUC8 {huc8}. Missing: {', '.join(missing)}. "
+        + _STEP1_FAILURE_HINT.format(huc8=huc8)
+    )
+    if download_error is not None:
+        logger.warning(
+            "HUC8 %s download failed: %s", huc8, download_error, exc_info=download_error
+        )
+        raise RuntimeError(message) from download_error
+    logger.warning(message)
+    raise RuntimeError(message)
 
 
 def _run_flood_step2_nwm_streamflow(huc8: str, datetime_str: str) -> None:
@@ -1253,6 +1363,7 @@ __all__ = [
     "_parse_generate_flood_json_body",
     "enforce_cache_budget",
     "prune_huc_hydrofabric",
+    "_missing_step1_artifacts",
     "_run_flood_step1_download_huc8",
     "_run_flood_step2_nwm_streamflow",
     "_run_flood_step3_hand_inundation",
