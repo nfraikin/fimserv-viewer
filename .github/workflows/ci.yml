@@ -1,0 +1,66 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    name: Lint (ruff)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install "ruff==0.16.8"
+      - run: ruff check --output-format=github .
+
+  python:
+    name: Import check + tests (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        # requires-python is >=3.10,<3.13; 3.13 is unsupported.
+        python-version: ["3.10", "3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      # Deliberately NOT `pip install -e .` - that pulls FIMserv and several
+      # GB of geospatial deps. fim_logic imports FIMserv lazily
+      # (_load_fimserve), so the modules import with the stdlib alone.
+      # Django is the only extra the test suite needs.
+      - run: pip install django
+      - name: Import check
+        run: |
+          python -c "import tethysapp.fimserve_viewer.fim_logic"
+          python -c "import tethysapp.fimserve_viewer.manage_cache"
+      - name: Unit tests
+        run: python -m unittest discover -s tests -v
+
+  js:
+    name: JS syntax check
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: node --check
+        run: |
+          find tethysapp/fimserve_viewer/public/js -name '*.js' -print0 \
+            | xargs -0 -n1 node --check
