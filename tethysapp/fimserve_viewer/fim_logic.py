@@ -510,8 +510,16 @@ def _locate_generated_inundation_tif(
 ) -> Tuple[Optional[Path], str]:
     """Return (path, '') on success, or (None, diagnostic_message).
 
-    Searches every candidate dir for an exact-timestamp match first, then
-    falls back to any ``*_inundation.tif`` in those dirs.
+    Only rasters whose basename carries the *requested* event timestamp are
+    accepted. There is deliberately no ``*_inundation.tif`` fallback: the
+    inundation dir is shared by every past NWM event for this HUC and by
+    custom-discharge runs, so a wildcard match would happily return a raster
+    for a different date - or a different discharge scenario - and the caller
+    would publish it as this job's result. Failing loudly is better than
+    silently serving the wrong science (see issue #4).
+
+    Two patterns are tried because FIMserv sometimes writes the seconds field
+    as ``00``; both describe the same requested event.
     """
     date_obj = datetime.strptime(datetime_str, "%Y-%m-%d %H:%M:%S")
     date_formatted = date_obj.strftime("%Y%m%d%H%M%S")
@@ -520,7 +528,6 @@ def _locate_generated_inundation_tif(
     for pattern in (
         f"NWM_{date_formatted}_{huc8}_inundation.tif",
         f"NWM_{date_formatted_alt}_{huc8}_inundation.tif",
-        "*_inundation.tif",
     ):
         match = _find_inundation_file(huc8, pattern)
         if match is not None:
@@ -528,10 +535,16 @@ def _locate_generated_inundation_tif(
             return match, ""
 
     searched = [str(d) for d in _candidate_inundation_dirs(huc8)]
+    present = sorted(
+        {p.name for d in _candidate_inundation_dirs(huc8) if d.exists()
+         for p in d.glob("*_inundation.tif")}
+    )
     data_inputs = _fimserv_data_inputs_dir()
     csvs = list(data_inputs.glob(f"*{huc8}*.csv")) if data_inputs.exists() else []
     msg = (
-        f"Flood map generated but file not found. Searched: {searched}. "
+        f"No inundation raster was produced for {datetime_str}. "
+        f"Searched: {searched}. "
+        f"Other rasters present (not used): {present or 'none'}. "
         f"Discharge CSVs for {huc8}: {[c.name for c in csvs] or 'none'}. "
         "Check the terminal where the portal runs for inundation errors."
     )
