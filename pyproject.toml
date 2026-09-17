@@ -30,7 +30,8 @@ requires-python = ">=3.10,<3.13"
 # tqdm, and the jupyter stack.
 dependencies = [
     # FIMserv, pinned. Bump the ref here to upgrade.
-    "fimserve @ git+https://github.com/sdmlua/FIMserv.git@83b278931cea5a04e437bf5f2fde947b5904c7b6",
+    # Aquaveo fork: sdmlua@83b2789 + narrow the NWM retrospective fetch to the target day.
+    "fimserve @ git+https://github.com/Aquaveo/FIMserv.git@ce660138622b5da91977a9ce6f6379c9a6981526",
 
     # Imported directly by the viewer (fim_logic.py / controllers.py).
     "geopandas",

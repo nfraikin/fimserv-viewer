@@ -33,8 +33,32 @@ from .results import (
     custom_download_name,
     labels_name_for_tif,
     nwm_pattern,
+    preview_name_for_tif,
     results,
 )
+
+
+def preview_payload(huc8, key):
+    """Preview for a stored result: served from storage, rendered only on a miss.
+
+    Results generated since previews were published return without touching
+    the raster. Older results are rendered once and written back, so the cost
+    is paid at most once per result rather than on every view.
+    """
+    preview_key = results.key_for(huc8, preview_name_for_tif(Path(key).name))
+    stored = results.text(preview_key)
+    if stored:
+        return json.loads(stored)
+
+    with results.local(key) as map_file:
+        payload = fim_logic.build_preview_payload(map_file, huc8=huc8)
+    try:
+        results.store_text(
+            json.dumps(payload), huc8, preview_name_for_tif(Path(key).name)
+        )
+    except Exception:
+        traceback.print_exc()  # serving the payload matters more than caching it
+    return payload
 
 
 def find_custom_map_key(huc8, discharge_val):
@@ -369,16 +393,7 @@ def flood_map_preview_nwm(request, huc8, date_str):
                 status=404,
             )
 
-        with results.local(key) as map_file:
-            out = fim_logic._tif_to_preview_png(map_file, huc8=huc8)
-        return JsonResponse(
-            {
-                "status": "success",
-                "image": f"data:image/png;base64,{out['png_b64']}",
-                "bounds": out["bounds"],
-                "mercator": out["mercator"],
-            }
-        )
+        return JsonResponse({"status": "success", **preview_payload(huc8, key)})
     except Exception as exc:
         return JsonResponse(
             {"status": "error", "message": str(exc)}, status=500
@@ -434,16 +449,7 @@ def flood_map_preview_custom(request, huc8, discharge_str):
         if key is None:
             return no_custom_map_response(huc8, discharge_str)
 
-        with results.local(key) as map_file:
-            out = fim_logic._tif_to_preview_png(map_file, huc8=huc8)
-        return JsonResponse(
-            {
-                "status": "success",
-                "image": f"data:image/png;base64,{out['png_b64']}",
-                "bounds": out["bounds"],
-                "mercator": out["mercator"],
-            }
-        )
+        return JsonResponse({"status": "success", **preview_payload(huc8, key)})
     except Exception as exc:
         return JsonResponse(
             {"status": "error", "message": str(exc)}, status=500

@@ -113,10 +113,25 @@ def _patch_teehr():
     schema is built, so rebinding the module attribute is enough. This must run
     before any teehr fetch: FIMserv's Step 2 and the hydrograph endpoint both
     fetch through teehr.
+
+    Patching the defining module is the necessary part; the sweep that follows
+    also covers any teehr module that did ``from ... import format_datetime64``
+    and therefore holds its own reference to the original.
     """
+    import sys as _sys
+
     import teehr.models.pandera_dataframe_schemas as _schemas  # type: ignore
 
     _schemas.format_datetime64 = _patched_format_datetime64
+
+    for _name, _mod in list(_sys.modules.items()):
+        if (
+            _name.startswith("teehr")
+            and _mod is not None
+            and getattr(_mod, "format_datetime64", None) is not None
+            and _mod.format_datetime64 is not _patched_format_datetime64
+        ):
+            _mod.format_datetime64 = _patched_format_datetime64
 
 
 def _load_fimserve():
@@ -1052,6 +1067,52 @@ def _tif_to_preview_png(tif_path, huc8=None):
     }
 
 
+def build_preview_payload(tif_path, huc8=None) -> dict:
+    """Preview image plus placement for one result tif, shaped for JSON.
+
+    Single source of truth for the preview response so the generation
+    pipeline and the view endpoint cannot drift apart.
+    """
+    out = _tif_to_preview_png(tif_path, huc8=huc8)
+    return {
+        "image": f"data:image/png;base64,{out['png_b64']}",
+        "bounds": out["bounds"],
+        "mercator": out["mercator"],
+    }
+
+
+def to_cog(tif_path) -> Path:
+    """Rewrite a GeoTIFF in place as a valid Cloud Optimized GeoTIFF.
+
+    Keeps the source CRS and pixel values and adds the internal overview
+    pyramid a COG requires, so the stored raster can be opened over HTTP by
+    QGIS/ArcGIS without downloading it whole. Overviews resample with
+    nearest because the raster is categorical - averaging flooded and dry
+    pixels would invent values belonging to neither class.
+
+    The rewrite goes to a sibling temp file and is swapped in atomically, so
+    a failure leaves the original untouched.
+    """
+    import rasterio.shutil as rio_shutil
+
+    tif_path = Path(tif_path)
+    staged = tif_path.with_name(tif_path.name + ".cog.tmp")
+    try:
+        rio_shutil.copy(
+            str(tif_path),
+            str(staged),
+            driver="COG",
+            COMPRESS="LZW",
+            BLOCKSIZE=256,
+            OVERVIEW_RESAMPLING="NEAREST",
+            BIGTIFF="IF_SAFER",
+        )
+        os.replace(staged, tif_path)
+    finally:
+        staged.unlink(missing_ok=True)
+    return tif_path
+
+
 # ---------------------------------------------------------------------------
 # GeoJSON helpers.
 # ---------------------------------------------------------------------------
@@ -1388,6 +1449,8 @@ __all__ = [
     "DEFAULT_RECLASS_TABLE",
     "_get_huc8_boundary_for_mask",
     "_tif_to_preview_png",
+    "build_preview_payload",
+    "to_cog",
     "_empty_feature_collection",
     "build_flood_q_labels",
     "run_custom_discharge_flood_map",

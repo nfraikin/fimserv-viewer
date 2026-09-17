@@ -995,6 +995,10 @@ function showFloodSuccessModal(huc8, result) {
 
 const FLOOD_JOB_POLL_MS = 4000;
 const FLOOD_JOB_TERMINAL_STATUSES = ['success', 'error', 'interrupted'];
+// Generation pins the serving pod (heavy in-process compute), so status polls
+// can transiently hit 502/503/504 or an HTML gateway page. Tolerate a run of
+// those before giving up — the job keeps running server-side regardless.
+const FLOOD_JOB_MAX_POLL_FAILURES = 15;
 
 function setFloodStatus(html) {
     const statusDiv = document.getElementById('flood-map-status');
@@ -1013,15 +1017,34 @@ function floodJobSleep(ms) {
 }
 
 async function fetchJobJson(url, options) {
-    const response = await fetch(url, options);
-    let result;
+    let response;
+    try {
+        response = await fetch(url, options);
+    } catch (networkErr) {
+        const e = new Error('Network error contacting the API server.');
+        e.retryable = true;
+        throw e;
+    }
+    let result = null;
+    let parseErr = null;
     try {
         result = await response.json();
-    } catch (parseErr) {
-        throw new Error('Invalid response from API server.');
+    } catch (err) {
+        parseErr = err;
     }
-    if (!response.ok || result.status !== 'success') {
-        throw new Error((result && result.message) || response.statusText || 'Request failed');
+    if (!response.ok) {
+        // 5xx (502/503/504) come from the gateway when the pod is busy or
+        // restarting — transient, so callers may retry.
+        const e = new Error((result && result.message) || response.statusText || ('HTTP ' + response.status));
+        e.retryable = response.status >= 500;
+        throw e;
+    }
+    if (parseErr || !result || result.status !== 'success') {
+        // A non-JSON body (an HTML error page) means a gateway hiccup, not an
+        // app-level failure — treat the parse case as transient.
+        const e = new Error((result && result.message) || 'Invalid response from API server.');
+        e.retryable = !!parseErr;
+        throw e;
     }
     return result;
 }
@@ -1043,9 +1066,24 @@ async function submitFloodJob(payload) {
 }
 
 async function pollFloodJob(jobId, abortController) {
+    let failures = 0;
     while (true) {
         if (abortController.signal.aborted) throw new DOMException('Aborted', 'AbortError');
-        const result = await fetchJobJson('./api/jobs/status/' + encodeURIComponent(jobId) + '/');
+        let result;
+        try {
+            result = await fetchJobJson('./api/jobs/status/' + encodeURIComponent(jobId) + '/');
+        } catch (error) {
+            // Don't abort the watch on a transient gateway error — the job is
+            // still running server-side. Retry until the pod recovers.
+            if (error && error.retryable && failures < FLOOD_JOB_MAX_POLL_FAILURES) {
+                failures += 1;
+                floodGenerateOverlayShow('Generating flood map… (server busy, retrying)');
+                await floodJobSleep(FLOOD_JOB_POLL_MS);
+                continue;
+            }
+            throw error;
+        }
+        failures = 0;
         if (FLOOD_JOB_TERMINAL_STATUSES.includes(result.job.status)) return result.job;
         floodGenerateOverlayShow(result.job.message || 'Generating flood map…');
         await floodJobSleep(FLOOD_JOB_POLL_MS);

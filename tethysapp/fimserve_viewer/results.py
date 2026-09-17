@@ -89,6 +89,11 @@ def nwm_labels_pattern(huc8: str, date_str: str) -> str:
     return labels_name_for_tif(nwm_pattern(huc8, date_str))
 
 
+def preview_name_for_tif(tif_name: str) -> str:
+    """Rendered-preview filename co-named with a result tif."""
+    return tif_name.replace("_inundation.tif", "_preview.json")
+
+
 class ResultStorage:
     """Publishes and retrieves result tifs through default storage."""
 

@@ -9,7 +9,7 @@ class App(TethysAppBase):
     description = 'HUC8 flood inundation viewer powered by FIMserv.'
     package = 'fimserve_viewer'  # WARNING: Do not change this value
     index = 'home'
-    icon = f'{package}/images/icon.gif'
+    icon = f'{package}/images/fimserv.png'
     root_url = 'fimserve-viewer'
     color = '#1e88e5'
     tags = '"Hydrology","Hydroinformatics","Flood","FIMserv"'
