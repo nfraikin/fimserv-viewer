@@ -1303,16 +1303,16 @@ def run_custom_discharge_flood_map(huc8: str, discharge_val: float) -> Path:
 # Hydrograph helper (used by /api/get-hydrograph).
 # ---------------------------------------------------------------------------
 def build_hydrograph_payload(
-    huc8: str, date_str: str, window_days: int = 1
+    huc8: str, date_str: str, window_days: int = 14
 ) -> dict:
     """
     Build {status, times, values, huc8, datetime, window_days} for the plot.
 
     ``window_days`` is the half-width of the fetched span: the series runs from
-    that many days before the selected moment to the same distance after. One
-    day is usually too narrow to show where an event peaked, so the UI offers
-    wider spans; the teehr fetch is dominated by per-request overhead rather
-    than row count, so a wider window costs little.
+    that many days before the selected moment to the same distance after. A
+    narrow window can clip the real peak at its edge instead of showing it
+    (see #40), so the UI offers wider spans; the teehr fetch is dominated by
+    per-request overhead rather than row count, so a wider window costs little.
 
     Raises ValueError on bad date, FileNotFoundError when feature IDs are
     missing, RuntimeError when teehr fails.

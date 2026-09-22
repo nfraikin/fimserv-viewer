@@ -529,13 +529,15 @@ def get_hydrograph(request, huc8, date_str):
     """Return hydrograph (times, values) for the given HUC8 + date.
 
     Optional ``?days=N`` widens the span either side of the selected moment;
-    ``build_hydrograph_payload`` clamps it to a sane range.
+    ``build_hydrograph_payload`` clamps it to a sane range. Defaults to 14:
+    per #40, narrower windows (even ±7 on one watershed) can clip the real
+    peak at the window edge, and the fetch cost barely rises with span width.
     """
     try:
         try:
-            window_days = int(request.GET.get("days", 1))
+            window_days = int(request.GET.get("days", 14))
         except (TypeError, ValueError):
-            window_days = 1
+            window_days = 14
         payload = fim_logic.build_hydrograph_payload(
             huc8, date_str, window_days=window_days
         )

@@ -943,10 +943,13 @@ let hydroData = null;
 let hydroSelTime = null;
 /** Bumped per request so a slow response for an old watershed can't overwrite a newer one. */
 let hydroRequestSeq = 0;
-/** Half-width of the fetched span, in days. ±1 rarely shows where an event peaked;
- *  ±3 is a middle ground, and the extra rows cost only a few seconds. Persists
- *  across watersheds so it reads as a preference rather than a per-click setting. */
-let hydroWindowDays = 3;
+/** Half-width of the fetched span, in days. #40 found ±1 (and even ±7 on one
+ *  watershed) can clip the real peak at the window edge, while the teehr fetch
+ *  is dominated by per-request overhead — a 30x wider window cost only ~46%
+ *  more time. ±14 gives real events room to show their full shape without
+ *  waiting for a full ±30 fetch by default. Persists across watersheds so it
+ *  reads as a preference rather than a per-click setting. */
+let hydroWindowDays = 14;
 
 /** Reflect the current unit in the two-button toggle. */
 function syncHydrographUnitButtons() {
@@ -971,7 +974,7 @@ function setHydrographUnits(useCfs) {
 /** Changing the span needs a new fetch — the window is applied server-side. */
 function setHydrographWindow(days, huc8) {
     const n = parseInt(days, 10);
-    hydroWindowDays = Math.max(1, Math.min(30, isNaN(n) ? 1 : n));
+    hydroWindowDays = Math.max(1, Math.min(30, isNaN(n) ? 14 : n));
     if (hydroData) loadHydrograph(huc8);
 }
 
