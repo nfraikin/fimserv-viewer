@@ -526,9 +526,19 @@ def get_flood_map_custom(request, huc8, discharge_str):
 @controller(url="api/get-hydrograph/{huc8}/{date_str}")
 @csrf_exempt
 def get_hydrograph(request, huc8, date_str):
-    """Return hydrograph (times, values) for the given HUC8 + date."""
+    """Return hydrograph (times, values) for the given HUC8 + date.
+
+    Optional ``?days=N`` widens the span either side of the selected moment;
+    ``build_hydrograph_payload`` clamps it to a sane range.
+    """
     try:
-        payload = fim_logic.build_hydrograph_payload(huc8, date_str)
+        try:
+            window_days = int(request.GET.get("days", 1))
+        except (TypeError, ValueError):
+            window_days = 1
+        payload = fim_logic.build_hydrograph_payload(
+            huc8, date_str, window_days=window_days
+        )
         return JsonResponse(payload)
     except FileNotFoundError as exc:
         return JsonResponse(
