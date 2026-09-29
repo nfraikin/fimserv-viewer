@@ -1279,17 +1279,27 @@ function handleHydrographKey(ctx, evt) {
     }
 }
 
-/** Names the reach a panel's series comes from: the HUC's outlet (the reach
- *  draining the most of its stream network), identified by NWM feature ID.
- *  The ID pans the map to the outlet marker when there is one. */
+/** Where a panel's series comes from, e.g. "at the watershed outlet (NWM reach
+ *  123)": the HUC's outlet (the reach draining the most of its stream network),
+ *  or, when the river leaves through a reservoir, the reach entering it. The ID
+ *  pans the map to the outlet marker when there is one. */
 function outletReachLabel(ctx) {
     const fid = ctx.data && ctx.data.featureId;
-    if (fid == null) return 'the watershed outlet';
+    const where = hydroOutletEntersReservoir
+        ? 'where the river enters a reservoir' : 'at the watershed outlet';
+    if (fid == null) return where;
     const reach = 'NWM reach ' + escapeHtml(String(fid));
-    return 'the watershed outlet (' + (hydroOutletLatLng
+    return where + ' (' + (hydroOutletLatLng
         ? '<button type="button" class="hydrograph-outlet-link" onclick="panToHydrographOutlet()"'
-            + ' title="Show the outlet on the map">' + reach + '</button>'
+            + ' title="Show the reach on the map">' + reach + '</button>'
         : reach) + ')';
+}
+
+/** Why a reservoir case stops short of the outlet; '' otherwise. Ends in a space. */
+function outletReservoirNote() {
+    return hydroOutletEntersReservoir
+        ? 'NWM has no flow inside reservoirs, so this is the reach closest to the watershed outlet that has one. '
+        : '';
 }
 
 function retroHydrographNote(times) {
@@ -1297,12 +1307,12 @@ function retroHydrographNote(times) {
     // lopsided; say why rather than leave the reader to wonder.
     const trimmed = hydroRetro.data && hydroRetro.data.clipped
         ? ', trimmed where the NWM retrospective record ends' : '';
-    return 'Discharge at ' + outletReachLabel(hydroRetro) + ': '
+    return 'Discharge ' + outletReachLabel(hydroRetro) + ': '
         + times.length + ' hourly samples, '
         + escapeHtml(String(times[0]).slice(0, 10)) + ' to '
         + escapeHtml(String(times[times.length - 1]).slice(0, 10))
         + ' (±' + hydroWindowDays + (hydroWindowDays === 1 ? ' day' : ' days') + trimmed
-        + '). Click the plot to set the date and time, then use ← → to step hour by hour '
+        + '). ' + outletReservoirNote() + 'Click the plot to set the date and time, then use ← → to step hour by hour '
         + '(hold Shift for a day, Home/End for the ends).';
 }
 
@@ -1350,35 +1360,34 @@ function clearHydrograph() {
 
 // -----------------------------------------------------------------------------
 // Outlet reach on the map: the reach both hydrographs plot, highlighted, with a
-// marker where it ends. Both panels share it, since a watershed has one outlet.
+// marker where it leaves the watershed (or enters a reservoir). Both panels
+// share it, since a watershed has one outlet.
 // -----------------------------------------------------------------------------
 const HYDRO_OUTLET_COLOR = '#e67e22';   // orange: apart from the blue flood and labels
 let hydroOutletLayer = null;
 let hydroOutletFeatureId = null;
 let hydroOutletLatLng = null;
-
-/** The last vertex of a (Multi)LineString as [lat, lng]. NWM reach lines run
- *  upstream to downstream, so this is where the outlet reach ends. */
-function hydroOutletEndLatLng(geometry) {
-    let coords = geometry.coordinates;
-    if (geometry.type === 'MultiLineString') coords = coords[coords.length - 1];
-    const end = coords[coords.length - 1];
-    return [end[1], end[0]];
-}
+/** True when the river leaves through a reservoir and the reach stops short of it. */
+let hydroOutletEntersReservoir = false;
 
 /** Draw the outlet reach from a hydrograph response's `outlet` Feature. */
 function showHydrographOutlet(feature) {
-    if (!feature || !feature.geometry) return;
-    const fid = feature.properties && feature.properties.feature_id;
+    if (!feature || !feature.geometry || !feature.properties || !feature.properties.marker) return;
+    const fid = feature.properties.feature_id;
     if (hydroOutletLayer && fid === hydroOutletFeatureId) return;
     clearHydrographOutlet();
-    const label = 'Hydrograph outlet<br>NWM reach ' + escapeHtml(String(fid));
+    const props = feature.properties || {};
+    hydroOutletEntersReservoir = !!props.enters_reservoir;
+    const label = (hydroOutletEntersReservoir ? 'Hydrograph reach, entering a reservoir' : 'Hydrograph outlet')
+        + '<br>NWM reach ' + escapeHtml(String(fid));
     const reach = L.geoJSON(feature, {
         pane: 'hydroOutletPane',
         interactive: false,
         style: { color: HYDRO_OUTLET_COLOR, weight: 6, opacity: 0.9 },
     });
-    hydroOutletLatLng = hydroOutletEndLatLng(feature.geometry);
+    // The server places the marker where the reach leaves the watershed; the
+    // reach itself often runs on past the boundary.
+    hydroOutletLatLng = [props.marker[1], props.marker[0]];
     const marker = L.circleMarker(hydroOutletLatLng, {
         pane: 'hydroOutletPane',
         radius: 8,
@@ -1396,6 +1405,7 @@ function clearHydrographOutlet() {
     hydroOutletLayer = null;
     hydroOutletFeatureId = null;
     hydroOutletLatLng = null;
+    hydroOutletEntersReservoir = false;
 }
 
 /** Bring the outlet into view; it can sit at the watershed's far edge. The open
@@ -2162,9 +2172,9 @@ function applyForecastHydrographSelection(ctx) {
 }
 
 function forecastHydrographNote(times) {
-    return 'Discharge at ' + outletReachLabel(hydroForecast) + ' for the ' + escapeHtml(formatUtcHour(hydroForecast.cycleTime))
+    return 'Discharge ' + outletReachLabel(hydroForecast) + ' for the ' + escapeHtml(formatUtcHour(hydroForecast.cycleTime))
         + ' cycle, ' + escapeHtml(formatUtcHour(times[0])) + ' to ' + escapeHtml(formatUtcHour(times[times.length - 1]))
-        + '. Shaded hours have already passed. Click an hour still ahead to choose it, then use ← → to step.';
+        + '. ' + outletReservoirNote() + 'Shaded hours have already passed. Click an hour still ahead to choose it, then use ← → to step.';
 }
 
 async function loadForecastHydrograph(huc8, cycleToken) {

@@ -1351,6 +1351,71 @@ def retro_parquet_name(start: datetime, end: datetime) -> str:
     return f"{first}.parquet" if first == last else f"{first}_{last}.parquet"
 
 
+# ``Lake`` value of an NWM reach that is not part of a reservoir.
+NWM_NO_LAKE = -9999
+
+
+def _huc_polygon(huc8: str, crs):
+    """The HUC8 boundary as one polygon in ``crs``, or None when unavailable."""
+    boundary = _get_huc8_boundary_for_mask(huc8)
+    if boundary is None or boundary.empty:
+        return None
+    if boundary.crs is None:
+        boundary = boundary.set_crs(4326)
+    return boundary.to_crs(crs).union_all()
+
+
+def _line_start(geom):
+    """First vertex of a (Multi)LineString: its upstream end, for NWM reaches."""
+    from shapely.geometry import Point
+
+    line = geom.geoms[0] if geom.geom_type == "MultiLineString" else geom
+    return Point(line.coords[0])
+
+
+def _load_stream_network(huc8: str):
+    """``(streams, polygon)``: the HUC's NWM reaches indexed by ``ID``, and its boundary.
+
+    NWM reach lines run upstream to downstream. ``polygon`` (in the streams'
+    CRS) is None when no boundary is available; callers then skip the
+    in-HUC checks rather than fail. Raises FileNotFoundError when the stream
+    network is missing.
+    """
+    import geopandas as gpd
+
+    streams_path = _find_huc_file(huc8, "nwm_subset_streams.gpkg")
+    if streams_path is None:
+        raise FileNotFoundError(
+            f"No stream network (nwm_subset_streams.gpkg) for HUC8 {huc8}. "
+            "Generate a flood map first for this HUC8."
+        )
+    streams = gpd.read_file(streams_path, columns=["ID", "to", "Length", "Lake"])
+    streams["ID"] = streams["ID"].astype("int64")
+    streams["to"] = streams["to"].astype("int64")
+    streams["Lake"] = streams["Lake"].astype("int64")
+    streams = streams.drop_duplicates("ID").set_index("ID")
+    return streams, _huc_polygon(huc8, streams.crs)
+
+
+def _reaches_with_nwm_flow(streams) -> set:
+    """The reaches NWM reports streamflow for.
+
+    NWM routes water through a reservoir as a whole, so the reaches inside one
+    (``Lake`` set) have no streamflow of their own; only the lake's outflow
+    reach, whose downstream reach is outside the lake, does. Checked against
+    the v3.0 retrospective on five HUCs: every non-lake reach had flow and no
+    lake-interior reach did. A lake reach draining to a reach missing from the
+    subset cannot be told apart from an interior one, so it is left out; that
+    missed one real outflow in 42 and never kept a reach without flow.
+    """
+    lake = streams["Lake"]
+    flowing = set()
+    for rid, own, to in zip(streams.index, lake, streams["to"]):
+        if own == NWM_NO_LAKE or (to in lake.index and lake[to] != own):
+            flowing.add(rid)
+    return flowing
+
+
 def outlet_feature_id(huc8: str, feature_ids) -> int:
     """The HUC's outlet reach: the one in ``feature_ids`` that drains the most network.
 
@@ -1362,22 +1427,18 @@ def outlet_feature_id(huc8: str, feature_ids) -> int:
     reach sits at the downstream end of the largest river, which for an
     ordinary HUC8 is where it leaves the watershed.
 
-    Raises FileNotFoundError when the stream network is missing or shares no
-    reach with ``feature_ids``.
-    """
-    import geopandas as gpd
+    Two kinds of reach are passed over. Reaches inside a reservoir have no NWM
+    streamflow (see ``_reaches_with_nwm_flow``); a HUC whose river leaves
+    through one gets the reach where the river enters it instead of an empty
+    hydrograph. Reaches that start outside the HUC are buffer, downstream of
+    the real outlet.
 
-    streams_path = _find_huc_file(huc8, "nwm_subset_streams.gpkg")
-    if streams_path is None:
-        raise FileNotFoundError(
-            f"No stream network (nwm_subset_streams.gpkg) for HUC8 {huc8}. "
-            "Generate a flood map first for this HUC8."
-        )
-    streams = gpd.read_file(
-        streams_path, ignore_geometry=True, columns=["ID", "to", "Length"]
-    )
-    ids = streams["ID"].astype("int64").tolist()
-    downstream = dict(zip(ids, streams["to"].astype("int64").tolist()))
+    Raises FileNotFoundError when the stream network is missing or none of
+    ``feature_ids`` qualifies.
+    """
+    streams, polygon = _load_stream_network(huc8)
+    ids = streams.index.tolist()
+    downstream = dict(zip(ids, streams["to"].tolist()))
     # Each reach starts with its own length; headwaters are final at once, and
     # every other reach is final once all the reaches flowing into it have
     # passed their totals down.
@@ -1398,30 +1459,75 @@ def outlet_feature_id(huc8: str, feature_ids) -> int:
         raise FileNotFoundError(
             f"None of HUC8 {huc8}'s feature IDs are in its stream network."
         )
+    flowing = _reaches_with_nwm_flow(streams)
+    candidates = [
+        fid
+        for fid in candidates
+        if fid in flowing
+        and (polygon is None or _line_start(streams.geometry[fid]).within(polygon))
+    ]
+    if not candidates:
+        raise FileNotFoundError(f"No reach in HUC8 {huc8} has NWM streamflow to plot.")
     return max(candidates, key=drained.__getitem__)
+
+
+def _enters_reservoir(streams, polygon, feature_id: int) -> bool:
+    """Whether a reservoir lies between this reach and where its river leaves the HUC."""
+    seen = set()
+    rid = streams.at[feature_id, "to"]
+    while rid in streams.index and rid not in seen:
+        seen.add(rid)
+        if polygon is not None and not _line_start(streams.geometry[rid]).within(polygon):
+            return False
+        if streams.at[rid, "Lake"] != NWM_NO_LAKE:
+            return True
+        rid = streams.at[rid, "to"]
+    return False
 
 
 def outlet_reach_feature(huc8: str, feature_id: int) -> Optional[dict]:
     """One reach of the HUC's stream network as a WGS84 GeoJSON Feature, or None.
 
-    For the map's outlet marker. NWM reach lines run upstream to downstream,
-    so the last coordinate is where the reach ends. None (not an error) when
-    the network or the reach is missing: the marker is extra, and its absence
-    should not cost the user the hydrograph.
+    For the map's outlet marker, placed at ``properties.marker`` ([lon, lat]):
+    where the reach crosses out of the HUC, or its downstream end when it
+    ends inside. The outlet reach often runs well past the boundary (3.6 km
+    on 03020103), so its end alone would put the marker outside the
+    watershed; lines run upstream to downstream, so the exit is the point of
+    the reach's in-HUC part furthest along it. ``properties.enters_reservoir``
+    says the reach stops short of the HUC's edge because its river leaves
+    through a reservoir, where NWM has no flow (see ``outlet_feature_id``).
+
+    None (not an error) when the network or the reach is missing: the marker
+    is extra, and its absence should not cost the user the hydrograph.
     """
     import geopandas as gpd
-    from shapely.geometry import mapping
+    import shapely
+    from shapely.geometry import Point, mapping
 
-    streams_path = _find_huc_file(huc8, "nwm_subset_streams.gpkg")
-    if streams_path is None:
+    try:
+        streams, polygon = _load_stream_network(huc8)
+    except FileNotFoundError:
         return None
-    reach = gpd.read_file(streams_path, where=f"ID = {int(feature_id)}")
-    if reach.empty:
+    feature_id = int(feature_id)
+    if feature_id not in streams.index:
         return None
+    line = streams.geometry[feature_id]
+    inside = line.intersection(polygon) if polygon is not None else None
+    if inside is None or inside.is_empty:
+        exit_point = Point(shapely.get_coordinates(line)[-1])
+    else:
+        exit_point = max(
+            (Point(xy) for xy in shapely.get_coordinates(inside)), key=line.project
+        )
+    wgs84 = gpd.GeoSeries([line, exit_point], crs=streams.crs).to_crs(4326)
     return {
         "type": "Feature",
-        "geometry": mapping(reach.to_crs(4326).geometry.iloc[0]),
-        "properties": {"feature_id": int(feature_id)},
+        "geometry": mapping(wgs84.iloc[0]),
+        "properties": {
+            "feature_id": feature_id,
+            "marker": [wgs84.iloc[1].x, wgs84.iloc[1].y],
+            "enters_reservoir": _enters_reservoir(streams, polygon, feature_id),
+        },
     }
 
 

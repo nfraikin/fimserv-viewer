@@ -18,27 +18,13 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
 from tethysapp.fimserve_viewer import fim_logic  # noqa: E402
+from hydrofabric import write_hydrofabric  # noqa: E402
 
 FIRST = fim_logic.NWM_RETRO_FIRST_HOUR
 LAST = fim_logic.NWM_RETRO_LAST_HOUR
-
-
-def write_streams(huc_dir, reaches):
-    """An ``nwm_subset_streams.gpkg`` of ``(ID, to, Length)`` reaches."""
-    import geopandas as gpd
-    from shapely.geometry import LineString
-
-    huc_dir.mkdir(parents=True, exist_ok=True)
-    gpd.GeoDataFrame(
-        {
-            "ID": [r[0] for r in reaches],
-            "to": [r[1] for r in reaches],
-            "Length": [r[2] for r in reaches],
-        },
-        geometry=[LineString([(i, 0), (i + 1, 0)]) for i in range(len(reaches))],
-        crs=5070,
-    ).to_file(huc_dir / "nwm_subset_streams.gpkg", driver="GPKG")
 
 
 def hourly_rows(hours, location_ids, value):
@@ -105,7 +91,10 @@ class BuildPayloadTests(unittest.TestCase):
         (flood_dir / "feature_IDs.csv").write_text("feature_id\n101\n202\n")
         self.retro_dir = flood_dir / "discharge" / "nwm30_retrospective"
         # 101 flows into 202, which leaves the HUC: 202 is the outlet.
-        write_streams(flood_dir / self.HUC8, [(101, 202, 1000.0), (202, 0, 1000.0)])
+        write_hydrofabric(
+            flood_dir / self.HUC8,
+            [(101, 202, [(0, 0), (1000, 0)]), (202, 0, [(1000, 0), (2000, 0)])],
+        )
         for target, value in (
             ("_candidate_data_inputs_dirs", lambda: []),
             ("_candidate_fimserv_roots", lambda: [root]),
@@ -162,7 +151,7 @@ class BuildPayloadTests(unittest.TestCase):
         payload = self.build("2022-04-27-12-00-00")
         self.assertEqual(payload["feature_id"], 202)
         self.assertEqual(self.location_ids, [[202]])
-        self.assertEqual(payload["outlet"]["properties"], {"feature_id": 202})
+        self.assertEqual(payload["outlet"]["properties"]["feature_id"], 202)
 
     def test_all_reach_parquet_from_before_the_change_yields_the_outlet_alone(self):
         # teehr keeps the file on disk, so the outlet must be picked out of it
