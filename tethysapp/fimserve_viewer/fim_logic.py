@@ -1302,9 +1302,17 @@ def run_custom_discharge_flood_map(huc8: str, discharge_val: float) -> Path:
 # ---------------------------------------------------------------------------
 # Hydrograph helper (used by /api/get-hydrograph).
 # ---------------------------------------------------------------------------
-def build_hydrograph_payload(huc8: str, date_str: str) -> dict:
+def build_hydrograph_payload(
+    huc8: str, date_str: str, window_days: int = 14
+) -> dict:
     """
-    Build {status, times, values, huc8, datetime} for the hydrograph plot.
+    Build {status, times, values, huc8, datetime, window_days} for the plot.
+
+    ``window_days`` is the half-width of the fetched span: the series runs from
+    that many days before the selected moment to the same distance after. A
+    narrow window can clip the real peak at its edge instead of showing it
+    (see #40), so the UI offers wider spans; the teehr fetch is dominated by
+    per-request overhead rather than row count, so a wider window costs little.
 
     Raises ValueError on bad date, FileNotFoundError when feature IDs are
     missing, RuntimeError when teehr fails.
@@ -1322,8 +1330,10 @@ def build_hydrograph_payload(huc8: str, date_str: str) -> dict:
     datetime_str = f"{date_str} {time_str}"
     time_obj = pd.to_datetime(datetime_str)
 
-    lag_date = (time_obj - pd.Timedelta(days=1)).strftime("%Y-%m-%d")
-    lead_date = (time_obj + pd.Timedelta(days=1)).strftime("%Y-%m-%d")
+    # Clamp: a stray large value would ask teehr for an unbounded fetch.
+    window_days = max(1, min(30, int(window_days)))
+    lag_date = (time_obj - pd.Timedelta(days=window_days)).strftime("%Y-%m-%d")
+    lead_date = (time_obj + pd.Timedelta(days=window_days)).strftime("%Y-%m-%d")
 
     feature_ids = None
     csv_pattern = f"NWM_*_{huc8}.csv"
@@ -1396,6 +1406,7 @@ def build_hydrograph_payload(huc8: str, date_str: str) -> dict:
         "values": values,
         "huc8": huc8,
         "datetime": datetime_str,
+        "window_days": window_days,
     }
 
 

@@ -594,3 +594,129 @@ img.flood-raster-crisp.leaflet-image-layer {
 .flood-success-ok:active {
     transform: translateY(0);
 }
+
+/* ---- Hydrograph panel (issue #25) ------------------------------------- */
+.hydrograph-controls {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 8px;
+    flex-wrap: wrap;
+}
+
+.hydrograph-ctl {
+    font-size: 12px;
+    font-weight: 600;
+    color: #555;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.hydrograph-ctl select {
+    font-size: 12px;
+    padding: 4px 6px;
+    border: 1px solid #ddd;
+    border-radius: 4px;
+    background: #fff;
+    color: #2c3e50;
+}
+
+/* Segmented control: the active unit is shown filled, so the current state is
+   readable at a glance rather than inferred from a "switch to..." label. */
+.hydrograph-units {
+    display: inline-flex;
+    border: 1px solid #ddd;
+    border-radius: 4px;
+    overflow: hidden;
+}
+
+.hydrograph-unit-btn {
+    font-size: 12px;
+    padding: 4px 9px;
+    border: none;
+    background: #fff;
+    color: #7f8c8d;
+    cursor: pointer;
+    transition: background 0.15s, color 0.15s;
+}
+
+.hydrograph-unit-btn + .hydrograph-unit-btn {
+    border-left: 1px solid #ddd;
+}
+
+.hydrograph-unit-btn:hover:not(.is-active) {
+    background: #f1f3f5;
+}
+
+.hydrograph-unit-btn.is-active {
+    background: #2980b9;
+    color: #fff;
+    font-weight: 600;
+}
+
+.hydrograph-panel {
+    background: #f8f9fa;
+    border-radius: 6px;
+    padding: 10px;
+}
+
+/* width:100% is why the click handler converts through getScreenCTM() rather
+   than trusting offsetX -- the SVG is scaled to whatever the sidebar allows. */
+.hydrograph-panel svg {
+    width: 100%;
+    height: auto;
+    display: block;
+    background: #fff;
+    border: 1px solid #e3e6e8;
+    border-radius: 4px;
+    cursor: crosshair;
+}
+
+/* The plot takes keyboard focus so arrow keys can step between samples; make
+   that state obvious, since otherwise there is no clue the keys will do anything. */
+.hydrograph-panel svg:focus-visible {
+    outline: 2px solid #2980b9;
+    outline-offset: 1px;
+}
+
+.hydrograph-panel svg:focus {
+    border-color: #2980b9;
+}
+
+.hydrograph-note {
+    font-size: 11px;
+    color: #7f8c8d;
+    line-height: 1.35;
+    margin: 8px 0 0;
+}
+
+.hydrograph-error {
+    color: #c0392b;
+}
+
+.hydrograph-btn {
+    width: 100%;
+    padding: 10px;
+    margin-top: 10px;
+    /* Same blue as the "Show on map" button — both reveal something for the
+       selected watershed, so they read as a pair. */
+    background: #3498db;
+    color: #fff;
+    border: none;
+    border-radius: 6px;
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background 0.2s;
+}
+
+.hydrograph-btn:hover:not(:disabled) {
+    background: #2980b9;
+}
+
+.hydrograph-btn:disabled {
+    background: #b2bec3;
+    cursor: default;
+}

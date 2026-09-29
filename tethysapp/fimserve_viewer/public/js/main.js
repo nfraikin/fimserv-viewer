@@ -221,6 +221,8 @@ let lastSidebarHuc8 = null;
         showFloodDischargeInFt3s = cb.checked;
         updateFloodLegendDischargeBlurb();
         reapplyFloodQLabelMarkersFromCache();
+        syncHydrographUnitButtons();
+        if (hydroData) renderHydrograph();
     });
 })();
 
@@ -269,6 +271,7 @@ function displayHUC8Details(properties) {
         hideFloodLegend();
     }
     lastSidebarHuc8 = huc8Code;
+    clearHydrograph();
 
     sidebar.classList.add('open');
 
@@ -305,6 +308,32 @@ function displayHUC8Details(properties) {
                 <strong style="color: #c0392b;">No FIM coverage</strong>
                 <p style="font-size: 12px; color: #7f8c8d; margin-top: 6px;">HAND-FIM data is not available for this HUC8, so a flood map cannot be generated here. Coverage is limited to the CONUS watersheds in the OWP HAND-FIM dataset.</p>
             </div>`;
+
+    // Sits beneath the generate controls. The endpoint needs feature_IDs.csv from a
+    // completed run, so before one exists this explains that rather than going blank.
+    const hydrographSection = covered ? `
+        <div class="info-section">
+            <h3>Hydrograph</h3>
+            <div class="hydrograph-controls">
+                <label class="hydrograph-ctl">Span
+                    <select id="hydrograph-window" onchange="setHydrographWindow(this.value, '${huc8Code}')">
+                        <option value="1"${hydroWindowDays === 1 ? ' selected' : ''}>&plusmn; 1 day</option>
+                        <option value="3"${hydroWindowDays === 3 ? ' selected' : ''}>&plusmn; 3 days</option>
+                        <option value="7"${hydroWindowDays === 7 ? ' selected' : ''}>&plusmn; 7 days</option>
+                        <option value="14"${hydroWindowDays === 14 ? ' selected' : ''}>&plusmn; 14 days</option>
+                        <option value="30"${hydroWindowDays === 30 ? ' selected' : ''}>&plusmn; 30 days</option>
+                    </select>
+                </label>
+                <div class="hydrograph-units" role="group" aria-label="Discharge units">
+                    <button type="button" id="hydro-unit-m3s" class="hydrograph-unit-btn${showFloodDischargeInFt3s ? '' : ' is-active'}" onclick="setHydrographUnits(false)">m&sup3;/s</button>
+                    <button type="button" id="hydro-unit-cfs" class="hydrograph-unit-btn${showFloodDischargeInFt3s ? ' is-active' : ''}" onclick="setHydrographUnits(true)">ft&sup3;/s</button>
+                </div>
+            </div>
+            <div id="hydrograph-panel" class="hydrograph-panel">
+                <p class="hydrograph-note">Generate a flood map for this watershed first &mdash; the discharge series is built from that run's river reaches.</p>
+            </div>
+            <button id="hydrograph-load-btn" class="hydrograph-btn" onclick="loadHydrograph('${huc8Code}')">Show hydrograph</button>
+        </div>` : '';
 
     content.innerHTML = `
         <div class="huc8-code">${getHUC8(properties)}</div>
@@ -344,6 +373,11 @@ function displayHUC8Details(properties) {
         <div class="info-section">
             <h3>Generate Flood Map with NWM Data</h3>
             ${generateSection}
+        </div>
+
+        ${hydrographSection}
+
+        <div class="info-section">
             <div class="sidebar-attribution" aria-label="Partner organizations">
                 <div class="sidebar-attribution-title">Authorization &amp; partners</div>
                 <p class="sidebar-attribution-sub">This application is developed under the authorization of and in partnership with the following organizations.</p>
@@ -887,6 +921,348 @@ async function loadFloodQLabelsNwm(huc8, dateStr, expectSeq) {
     }
 }
 
+// =============================================================================
+// Hydrograph panel (issue #25)
+// -----------------------------------------------------------------------------
+// Discharge time series for the selected watershed, drawn as inline SVG so the
+// app keeps its no-build-step, no-chart-library footing. Clicking the plot
+// writes the chosen hour back into the date/time inputs, which is what makes
+// the time input purposeful instead of arbitrary.
+// Backed by GET api/get-hydrograph/{huc8}/{date_str}.
+// =============================================================================
+
+/** Plot geometry in viewBox units. PAD_B is deeper than the rest: the x-axis carries time labels. */
+const HYDRO_W = 420, HYDRO_H = 180, HYDRO_PAD = 34, HYDRO_PAD_B = 40;
+const HYDRO_PLOT_W = HYDRO_W - HYDRO_PAD * 2;
+const HYDRO_PLOT_H = HYDRO_H - HYDRO_PAD - HYDRO_PAD_B;
+
+/** Series currently plotted: {times, values} with values in m³/s, or null. */
+let hydroData = null;
+/** Selected moment as an ISO string. The TIMESTAMP is the source of truth, not its
+ *  array index — index 32 is a different hour in a 49-point series than a 337-point one. */
+let hydroSelTime = null;
+/** Bumped per request so a slow response for an old watershed can't overwrite a newer one. */
+let hydroRequestSeq = 0;
+/** Half-width of the fetched span, in days. #40 found ±1 (and even ±7 on one
+ *  watershed) can clip the real peak at the window edge, while the teehr fetch
+ *  is dominated by per-request overhead — a 30x wider window cost only ~46%
+ *  more time. ±14 gives real events room to show their full shape without
+ *  waiting for a full ±30 fetch by default. Persists across watersheds so it
+ *  reads as a preference rather than a per-click setting. */
+let hydroWindowDays = 14;
+
+/** Reflect the current unit in the two-button toggle. */
+function syncHydrographUnitButtons() {
+    const m3 = document.getElementById('hydro-unit-m3s');
+    const cfs = document.getElementById('hydro-unit-cfs');
+    if (m3) m3.classList.toggle('is-active', !showFloodDischargeInFt3s);
+    if (cfs) cfs.classList.toggle('is-active', showFloodDischargeInFt3s);
+}
+
+/** Units are shared with the map discharge labels, so flip both and keep the
+ *  legend checkbox in step — two controls disagreeing would be worse than one. */
+function setHydrographUnits(useCfs) {
+    showFloodDischargeInFt3s = !!useCfs;
+    const cb = document.getElementById('flood-units-cfs-toggle');
+    if (cb) cb.checked = showFloodDischargeInFt3s;
+    updateFloodLegendDischargeBlurb();
+    reapplyFloodQLabelMarkersFromCache();
+    syncHydrographUnitButtons();
+    if (hydroData) renderHydrograph();   // redraw only; no refetch, units are display-only
+}
+
+/** Changing the span needs a new fetch — the window is applied server-side. */
+function setHydrographWindow(days, huc8) {
+    const n = parseInt(days, 10);
+    hydroWindowDays = Math.max(1, Math.min(30, isNaN(n) ? 14 : n));
+    if (hydroData) loadHydrograph(huc8);
+}
+
+function hydroScaleX(i, n) {
+    if (n < 2) return HYDRO_PAD + HYDRO_PLOT_W / 2;
+    return HYDRO_PAD + (i / (n - 1)) * HYDRO_PLOT_W;
+}
+
+function hydroScaleY(v, min, max) {
+    // SVG y grows DOWNWARD, so the fraction is inverted to put max at the top.
+    // min/max come from the data itself: these series vary by only a few percent,
+    // and a zero baseline would flatten every one of them into a straight line.
+    if (max === min) return HYDRO_PAD + HYDRO_PLOT_H / 2;
+    return HYDRO_PAD + (1 - (v - min) / (max - min)) * HYDRO_PLOT_H;
+}
+
+/** Inverse of hydroScaleX: a pixel position back to the nearest sample index. */
+function hydroIndexFromX(px, n) {
+    if (n < 2) return 0;
+    const i = Math.round(((px - HYDRO_PAD) / HYDRO_PLOT_W) * (n - 1));
+    return Math.max(0, Math.min(n - 1, i));
+}
+
+/** Screen pixels -> viewBox units. The SVG is width:100%, so the two are not the
+ *  same; evt.offsetX would be right at one sidebar width and wrong at every other. */
+function hydroViewBoxX(evt, svg) {
+    const pt = svg.createSVGPoint();
+    pt.x = evt.clientX;
+    pt.y = evt.clientY;
+    return pt.matrixTransform(svg.getScreenCTM().inverse()).x;
+}
+
+/* Read the clock straight off the ISO string instead of via Date(). NWM timestamps
+ * arrive without a timezone, and Date() would read them as local time and shift every
+ * label by the UTC offset — the same class of bug as #1. */
+function hydroHour(ts) { return Number(String(ts).slice(11, 13)); }
+function hydroMinute(ts) { return String(ts).slice(14, 16); }
+
+/** Smallest interval a person actually thinks in that yields at most ~6 labels. */
+function hydroTickStepHours(spanHours) {
+    const steps = [1, 2, 3, 6, 12, 24, 48, 72, 168];
+    for (let k = 0; k < steps.length; k++) {
+        if (spanHours / steps[k] <= 6) return steps[k];
+    }
+    return 336;
+}
+
+function hydroChooseTicks(times) {
+    const span = (Date.parse(times[times.length - 1]) - Date.parse(times[0])) / 3.6e6;
+    const step = hydroTickStepHours(span);
+    const out = [];
+    let dayCount = null;
+    for (let i = 0; i < times.length; i++) {
+        const ts = times[i];
+        if (hydroMinute(ts) !== '00') continue;
+        if (step < 24) {
+            if (hydroHour(ts) % step === 0) out.push(i);
+        } else {
+            if (hydroHour(ts) !== 0) continue;
+            dayCount = (dayCount === null) ? 0 : dayCount + 1;
+            if (dayCount % (step / 24) === 0) out.push(i);
+        }
+    }
+    return out;
+}
+
+/** Midnight ticks show the date; every other tick shows the clock time. */
+function hydroTickLabel(ts) {
+    return hydroHour(ts) === 0 ? String(ts).slice(5, 10) : String(ts).slice(11, 16);
+}
+
+/** "2022-04-27T12:00:00" -> ["2022-04-27", "12:00:00"] for the two form inputs. */
+function hydroSplitTimestamp(ts) {
+    const parts = String(ts).split('T');
+    return [parts[0], (parts[1] || '00:00:00').slice(0, 8)];
+}
+
+/** Nearest sample to a given moment — lets the selection survive a data change. */
+function hydroIndexForTime(times, ts) {
+    if (!ts) return 0;
+    const target = Date.parse(ts);
+    let best = 0, bestGap = Infinity;
+    for (let i = 0; i < times.length; i++) {
+        const gap = Math.abs(Date.parse(times[i]) - target);
+        if (gap < bestGap) { bestGap = gap; best = i; }
+    }
+    return best;
+}
+
+/* The chart follows the same cfs/m³/s toggle as the map discharge labels. */
+function hydroDisplayValue(v) {
+    return showFloodDischargeInFt3s ? v * M3S_TO_FT3S : v;
+}
+function hydroUnitLabel() {
+    return showFloodDischargeInFt3s ? 'ft³/s' : 'm³/s';
+}
+
+function buildHydrographSvg(selIdx) {
+    const times = hydroData.times;
+    const n = times.length;
+    const values = [];
+    let min = Infinity, max = -Infinity;
+    for (let i = 0; i < n; i++) {
+        const v = hydroDisplayValue(hydroData.values[i]);
+        values.push(v);
+        if (v < min) min = v;
+        if (v > max) max = v;
+    }
+    const baseY = HYDRO_PAD + HYDRO_PLOT_H;
+    const unit = hydroUnitLabel();
+
+    let pts = '';
+    for (let i = 0; i < n; i++) {
+        pts += hydroScaleX(i, n).toFixed(1) + ',' + hydroScaleY(values[i], min, max).toFixed(1) + ' ';
+    }
+
+    let ticks = '';
+    const tickIdx = hydroChooseTicks(times);
+    for (let k = 0; k < tickIdx.length; k++) {
+        const x = hydroScaleX(tickIdx[k], n).toFixed(1);
+        ticks += '<line x1="' + x + '" y1="' + HYDRO_PAD + '" x2="' + x + '" y2="' + baseY + '" stroke="#f0f0f0"/>'
+              +  '<line x1="' + x + '" y1="' + baseY + '" x2="' + x + '" y2="' + (baseY + 4) + '" stroke="#bbb"/>'
+              +  '<text x="' + x + '" y="' + (baseY + 16) + '" font-size="9" fill="#666" text-anchor="middle">'
+              +  escapeHtml(hydroTickLabel(times[tickIdx[k]])) + '</text>';
+    }
+
+    const mx = hydroScaleX(selIdx, n);
+    const my = hydroScaleY(values[selIdx], min, max);
+    const split = hydroSplitTimestamp(times[selIdx]);
+    const anchor = mx > HYDRO_W * 0.6 ? 'end' : 'start';
+    const labelX = (anchor === 'end' ? mx - 6 : mx + 6).toFixed(1);
+
+    return '<svg id="hydrograph-svg" viewBox="0 0 ' + HYDRO_W + ' ' + HYDRO_H + '"'
+        + ' tabindex="0" role="slider" aria-label="Selected hour on the discharge time series"'
+        + ' aria-valuemin="0" aria-valuemax="' + (n - 1) + '" aria-valuenow="' + selIdx + '"'
+        + ' aria-valuetext="' + escapeHtml(split[0] + ' ' + split[1] + ', ' + values[selIdx].toFixed(2) + ' ' + unit) + '">'
+        + ticks
+        + '<line x1="' + HYDRO_PAD + '" y1="' + baseY + '" x2="' + (HYDRO_PAD + HYDRO_PLOT_W) + '" y2="' + baseY + '" stroke="#ccc"/>'
+        + '<line x1="' + HYDRO_PAD + '" y1="' + HYDRO_PAD + '" x2="' + HYDRO_PAD + '" y2="' + baseY + '" stroke="#ccc"/>'
+        + '<polyline points="' + pts.trim() + '" fill="none" stroke="#2980b9" stroke-width="2"/>'
+        + '<line x1="' + mx.toFixed(1) + '" y1="' + HYDRO_PAD + '" x2="' + mx.toFixed(1) + '" y2="' + baseY + '" stroke="#e67e22" stroke-width="1" stroke-dasharray="3 2"/>'
+        + '<circle cx="' + mx.toFixed(1) + '" cy="' + my.toFixed(1) + '" r="4" fill="#e67e22" stroke="#fff" stroke-width="1.5"/>'
+        + '<text x="' + labelX + '" y="' + (HYDRO_PAD + 11) + '" font-size="10" fill="#e67e22" text-anchor="' + anchor + '">' + escapeHtml(split[0] + ' ' + split[1]) + '</text>'
+        + '<text x="' + labelX + '" y="' + (HYDRO_PAD + 23) + '" font-size="10" fill="#e67e22" text-anchor="' + anchor + '">' + escapeHtml(values[selIdx].toFixed(2) + ' ' + unit) + '</text>'
+        + '<text x="' + (HYDRO_PAD - 4) + '" y="' + (HYDRO_PAD + 3) + '" font-size="9" fill="#666" text-anchor="end">' + escapeHtml(max.toFixed(2)) + '</text>'
+        + '<text x="' + (HYDRO_PAD - 4) + '" y="' + (baseY + 3) + '" font-size="9" fill="#666" text-anchor="end">' + escapeHtml(min.toFixed(2)) + '</text>'
+        + '<text x="2" y="' + (HYDRO_PAD - 10) + '" font-size="9" fill="#888">' + unit + '</text>'
+        + '</svg>';
+}
+
+function applyHydrographSelectionToInputs() {
+    if (!hydroSelTime) return;
+    const split = hydroSplitTimestamp(hydroSelTime);
+    const dateInput = document.getElementById('flood-date-input');
+    const timeInput = document.getElementById('flood-time-input');
+    if (dateInput) dateInput.value = split[0];
+    if (timeInput) timeInput.value = split[1];
+}
+
+/** Move the selection by whole samples. Arrow keys are the only way to land on an
+ *  exact hour once the span is wide enough that samples sit under a pixel apart. */
+function stepHydrographSelection(delta) {
+    if (!hydroData) return;
+    const times = hydroData.times;
+    const idx = hydroIndexForTime(times, hydroSelTime);
+    const next = Math.max(0, Math.min(times.length - 1, idx + delta));
+    if (next === idx) return;
+    hydroSelTime = times[next];
+    applyHydrographSelectionToInputs();
+    renderHydrograph();
+}
+
+function handleHydrographKey(evt) {
+    if (!hydroData) return;
+    const big = 24;                       // a day's worth of hourly samples
+    let delta = null, jumpTo = null;
+    switch (evt.key) {
+        case 'ArrowLeft':  delta = evt.shiftKey ? -big : -1; break;
+        case 'ArrowRight': delta = evt.shiftKey ?  big :  1; break;
+        case 'PageDown':   delta = -big; break;
+        case 'PageUp':     delta =  big; break;
+        case 'Home':       jumpTo = 0; break;
+        case 'End':        jumpTo = hydroData.times.length - 1; break;
+        default: return;
+    }
+    evt.preventDefault();                 // stop the sidebar scrolling instead
+    if (jumpTo !== null) {
+        hydroSelTime = hydroData.times[jumpTo];
+        applyHydrographSelectionToInputs();
+        renderHydrograph();
+    } else {
+        stepHydrographSelection(delta);
+    }
+}
+
+function renderHydrograph() {
+    const panel = document.getElementById('hydrograph-panel');
+    if (!panel) return;
+    if (!hydroData || !hydroData.times || hydroData.times.length < 2) {
+        panel.innerHTML = '<p class="hydrograph-note">Not enough data to plot a series.</p>';
+        return;
+    }
+    const times = hydroData.times;
+    const selIdx = hydroIndexForTime(times, hydroSelTime);
+    hydroSelTime = times[selIdx];
+
+    // Redrawing replaces the SVG node, so focus would be lost on every keypress.
+    const prevSvg = document.getElementById('hydrograph-svg');
+    const hadFocus = !!prevSvg && document.activeElement === prevSvg;
+
+    panel.innerHTML = buildHydrographSvg(selIdx)
+        + '<p class="hydrograph-note">' + times.length + ' hourly samples, '
+        + escapeHtml(String(times[0]).slice(0, 10)) + ' to '
+        + escapeHtml(String(times[times.length - 1]).slice(0, 10))
+        + ' (\u00b1' + hydroWindowDays + (hydroWindowDays === 1 ? ' day' : ' days')
+        + '). Click the plot to set the date and time, then use \u2190 \u2192 to step hour by hour '
+        + '(hold Shift for a day, Home/End for the ends).</p>';
+
+    const svg = document.getElementById('hydrograph-svg');
+    if (!svg) return;
+    svg.addEventListener('click', function (evt) {
+        if (!hydroData) return;
+        const idx = hydroIndexFromX(hydroViewBoxX(evt, svg), hydroData.times.length);
+        hydroSelTime = hydroData.times[idx];
+        applyHydrographSelectionToInputs();
+        svg.focus({ preventScroll: true });   // so the arrow keys work straight after a click
+        renderHydrograph();
+    });
+    svg.addEventListener('keydown', handleHydrographKey);
+    if (hadFocus) svg.focus({ preventScroll: true });
+}
+
+/** Drop any plotted series — called when the sidebar switches watershed. */
+function clearHydrograph() {
+    hydroRequestSeq++;
+    hydroData = null;
+    hydroSelTime = null;
+}
+
+async function loadHydrograph(huc8) {
+    const panel = document.getElementById('hydrograph-panel');
+    if (!panel) return;
+    const btn = document.getElementById('hydrograph-load-btn');
+    const dateInput = document.getElementById('flood-date-input');
+    const timeInput = document.getElementById('flood-time-input');
+    const date = dateInput ? dateInput.value : '';
+    const time = timeInput ? (timeInput.value || '00:00:00') : '00:00:00';
+
+    if (!date) {
+        panel.innerHTML = '<p class="hydrograph-note hydrograph-error">Pick a date first.</p>';
+        return;
+    }
+
+    const dateStr = date + '-' + time.replace(/:/g, '-');
+    const mySeq = ++hydroRequestSeq;
+    if (btn) { btn.disabled = true; btn.textContent = 'Loading…'; }
+    panel.innerHTML = '<p class="hydrograph-note">Fetching NWM streamflow — this usually takes about 15 seconds.</p>';
+
+    try {
+        const r = await fetch('./api/get-hydrograph/' + encodeURIComponent(huc8) + '/'
+            + encodeURIComponent(dateStr) + '/?days=' + encodeURIComponent(hydroWindowDays));
+        if (mySeq !== hydroRequestSeq) return;
+        const data = await r.json();
+        if (mySeq !== hydroRequestSeq) return;
+
+        if (!r.ok || data.status !== 'success' || !data.times || !data.times.length) {
+            // The endpoint raises FileNotFoundError before a watershed has been
+            // generated, because it needs that run's feature_IDs.csv.
+            panel.innerHTML = '<p class="hydrograph-note hydrograph-error">'
+                + escapeHtml(data.message || 'No streamflow data available for this watershed and date.')
+                + '</p>';
+            return;
+        }
+
+        hydroData = { times: data.times, values: data.values };
+        // The API echoes the requested moment as "YYYY-MM-DD HH:MM:SS"; the series
+        // uses ISO "T" form, so normalise before matching it to a sample.
+        hydroSelTime = data.datetime ? String(data.datetime).replace(' ', 'T') : data.times[0];
+        renderHydrograph();
+    } catch (e) {
+        if (mySeq !== hydroRequestSeq) return;
+        panel.innerHTML = '<p class="hydrograph-note hydrograph-error">Could not load the hydrograph: '
+            + escapeHtml(e.message) + '</p>';
+    } finally {
+        if (btn && mySeq === hydroRequestSeq) { btn.disabled = false; btn.textContent = 'Show hydrograph'; }
+    }
+}
+
 function clearFloodLayer() {
     floodUIMapRequestSeq++;
     if (floodOverlayLayer) { map.removeLayer(floodOverlayLayer); floodOverlayLayer = null; }
@@ -1099,6 +1475,7 @@ function finishFloodJob(huc8, job) {
     const summary = floodJobResultSummary(job);
     const fileLine = summary.file_name ? `<br><span style="font-size: 11px;">File: ${summary.file_name}</span>` : '';
     setFloodStatus(`<span style="color: #27ae60;">✓ Flood map generated successfully!</span>${fileLine}`);
+    loadHydrograph(huc8);
     requestAnimationFrame(function () {
         requestAnimationFrame(function () {
             showFloodSuccessModal(huc8, summary);
