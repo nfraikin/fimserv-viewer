@@ -35,7 +35,7 @@ import logging
 import os
 import re
 import tempfile
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional, Tuple
 
@@ -1310,19 +1310,61 @@ def run_custom_discharge_flood_map(huc8: str, discharge_val: float) -> Path:
 # ---------------------------------------------------------------------------
 # Hydrograph helper (used by /api/get-hydrograph).
 # ---------------------------------------------------------------------------
+# First and last hours teehr will fetch from the NWM v3.0 retrospective store
+# (its NWM30_MIN_DATE / NWM30_MAX_DATE). Hour-precise, unlike the day-level
+# NWM_RETROSPECTIVE_START/END above: the record starts at 01:00 on its first
+# day and ends at 23:00 on its last.
+NWM_RETRO_FIRST_HOUR = datetime(1979, 2, 1, 1)
+NWM_RETRO_LAST_HOUR = datetime(2023, 1, 31, 23)
+
+
+def hydrograph_fetch_span(moment: datetime, window_days: int) -> Tuple[datetime, datetime, bool]:
+    """``(start, end, clipped)`` to fetch for a hydrograph around ``moment``.
+
+    The span runs from midnight ``window_days`` before the moment to midnight
+    ``window_days`` after, trimmed to the retrospective record. teehr rejects
+    the whole request if either end falls outside the record, so without the
+    trim any moment within ``window_days`` of an edge - including the app's
+    default date, the record's last day - got an error instead of a chart.
+    ``clipped`` says whether trimming happened, so the UI can explain a
+    lopsided window.
+    """
+    day = datetime(moment.year, moment.month, moment.day)
+    start = day - timedelta(days=window_days)
+    end = day + timedelta(days=window_days)
+    clipped = False
+    if start < NWM_RETRO_FIRST_HOUR:
+        start, clipped = NWM_RETRO_FIRST_HOUR, True
+    if end > NWM_RETRO_LAST_HOUR:
+        end, clipped = NWM_RETRO_LAST_HOUR, True
+    return start, end, clipped
+
+
+def retro_parquet_name(start: datetime, end: datetime) -> str:
+    """The filename teehr gives the parquet for this span.
+
+    Mirrors teehr's ``format_grouped_filename``, which names the file after
+    the first and last *days* of the data it wrote (one day -> one date).
+    """
+    first, last = f"{start:%Y%m%d}", f"{end:%Y%m%d}"
+    return f"{first}.parquet" if first == last else f"{first}_{last}.parquet"
+
+
 def build_hydrograph_payload(
     huc8: str, date_str: str, window_days: int = 14
 ) -> dict:
     """
-    Build {status, times, values, huc8, datetime, window_days} for the plot.
+    Build {status, times, values, huc8, datetime, window_days, clipped} for the plot.
 
     ``window_days`` is the half-width of the fetched span: the series runs from
     that many days before the selected moment to the same distance after. A
     narrow window can clip the real peak at its edge instead of showing it
     (see #40), so the UI offers wider spans; the teehr fetch is dominated by
     per-request overhead rather than row count, so a wider window costs little.
+    Near either end of the retrospective record the span is trimmed to it
+    (see ``hydrograph_fetch_span``) and ``clipped`` is True.
 
-    Raises ValueError on bad date, FileNotFoundError when feature IDs are
+    Raises ValueError on a bad date or one outside the retrospective record, FileNotFoundError when feature IDs are
     missing, RuntimeError when teehr fails.
     """
     import pandas as pd
@@ -1336,12 +1378,11 @@ def build_hydrograph_payload(
         date_str = date_obj.strftime("%Y-%m-%d")
 
     datetime_str = f"{date_str} {time_str}"
-    time_obj = pd.to_datetime(datetime_str)
+    validate_nwm_datetime(date_obj)
 
     # Clamp: a stray large value would ask teehr for an unbounded fetch.
     window_days = max(1, min(30, int(window_days)))
-    lag_date = (time_obj - pd.Timedelta(days=window_days)).strftime("%Y-%m-%d")
-    lead_date = (time_obj + pd.Timedelta(days=window_days)).strftime("%Y-%m-%d")
+    start, end, clipped = hydrograph_fetch_span(date_obj, window_days)
 
     feature_ids = None
     csv_pattern = f"NWM_*_{huc8}.csv"
@@ -1382,15 +1423,13 @@ def build_hydrograph_payload(
     nwm_retro.nwm_retro_to_parquet(
         nwm_version="nwm30",
         variable_name="streamflow",
-        start_date=lag_date,
-        end_date=lead_date,
+        start_date=start,
+        end_date=end,
         location_ids=feature_ids,
         output_parquet_dir=str(retro_dir),
     )
 
-    parquet_file = (
-        retro_dir / f"{lag_date.replace('-', '')}_{lead_date.replace('-', '')}.parquet"
-    )
+    parquet_file = retro_dir / retro_parquet_name(start, end)
     if not parquet_file.exists():
         raise RuntimeError("Could not fetch NWM retrospective data.")
 
@@ -1415,6 +1454,7 @@ def build_hydrograph_payload(
         "huc8": huc8,
         "datetime": datetime_str,
         "window_days": window_days,
+        "clipped": clipped,
     }
 
 
@@ -1471,5 +1511,7 @@ __all__ = [
     "build_q_labels_from_csv",
     "run_custom_discharge_flood_map",
     "build_hydrograph_payload",
+    "hydrograph_fetch_span",
+    "retro_parquet_name",
     "reclassify_temp_copy",
 ]
