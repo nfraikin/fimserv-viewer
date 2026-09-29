@@ -1,9 +1,10 @@
-"""Tests for the retrospective hydrograph's fetch span.
+"""Tests for the retrospective hydrograph's fetch span and reach.
 
 The span around the selected moment must stay inside the NWM v3.0
 retrospective record: teehr rejects the whole request if either end falls
 outside it, which made the hydrograph fail on the app's own default date
-(2023-01-31, the record's last day).
+(2023-01-31, the record's last day). The series is the HUC's outlet reach,
+not an average over every reach.
 
 Run with:  python -m unittest discover -s tests
 """
@@ -21,6 +22,33 @@ from tethysapp.fimserve_viewer import fim_logic  # noqa: E402
 
 FIRST = fim_logic.NWM_RETRO_FIRST_HOUR
 LAST = fim_logic.NWM_RETRO_LAST_HOUR
+
+
+def write_streams(huc_dir, reaches):
+    """An ``nwm_subset_streams.gpkg`` of ``(ID, to, Length)`` reaches."""
+    import geopandas as gpd
+    from shapely.geometry import LineString
+
+    huc_dir.mkdir(parents=True, exist_ok=True)
+    gpd.GeoDataFrame(
+        {
+            "ID": [r[0] for r in reaches],
+            "to": [r[1] for r in reaches],
+            "Length": [r[2] for r in reaches],
+        },
+        geometry=[LineString([(i, 0), (i + 1, 0)]) for i in range(len(reaches))],
+        crs=5070,
+    ).to_file(huc_dir / "nwm_subset_streams.gpkg", driver="GPKG")
+
+
+def hourly_rows(hours, location_ids, value):
+    """teehr's long-format rows: one per hour per reach."""
+    import pandas as pd
+
+    return pd.DataFrame(
+        [(t, f"nwm30-{fid}", value) for t in hours for fid in location_ids],
+        columns=["value_time", "location_id", "value"],
+    )
 
 
 class FetchSpanTests(unittest.TestCase):
@@ -75,6 +103,9 @@ class BuildPayloadTests(unittest.TestCase):
         flood_dir = root / "output" / f"flood_{self.HUC8}"
         flood_dir.mkdir(parents=True)
         (flood_dir / "feature_IDs.csv").write_text("feature_id\n101\n202\n")
+        self.retro_dir = flood_dir / "discharge" / "nwm30_retrospective"
+        # 101 flows into 202, which leaves the HUC: 202 is the outlet.
+        write_streams(flood_dir / self.HUC8, [(101, 202, 1000.0), (202, 0, 1000.0)])
         for target, value in (
             ("_candidate_data_inputs_dirs", lambda: []),
             ("_candidate_fimserv_roots", lambda: [root]),
@@ -83,6 +114,7 @@ class BuildPayloadTests(unittest.TestCase):
             patcher.start()
             self.addCleanup(patcher.stop)
         self.calls = []
+        self.location_ids = []
 
     def fake_fetch(self, nwm_version, variable_name, start_date, end_date,
                    location_ids, output_parquet_dir, **_):
@@ -93,14 +125,14 @@ class BuildPayloadTests(unittest.TestCase):
 
         start, end = pd.Timestamp(start_date), pd.Timestamp(end_date)
         self.calls.append((start, end))
+        self.location_ids.append(list(location_ids))
         nwm_retro.validate_retrospective_start_end_date(nwm_version, start, end)
         hours = pd.date_range(start, end, freq="h")
-        frame = pd.DataFrame(
-            [(t, f"nwm30-{fid}", 1.0) for t in hours for fid in location_ids],
-            columns=["value_time", "location_id", "value"],
-        )
         name = nwm_retro.format_grouped_filename(xr.DataArray(hours, dims="time", coords={"time": hours}))
-        frame.to_parquet(Path(output_parquet_dir) / name)
+        path = Path(output_parquet_dir) / name
+        if path.exists():  # teehr's overwrite_output=False default
+            return
+        hourly_rows(hours, location_ids, 1.0).to_parquet(path)
 
     def build(self, date_str, days=14):
         with mock.patch(
@@ -125,6 +157,27 @@ class BuildPayloadTests(unittest.TestCase):
         payload = self.build("2022-04-27-12-00-00")
         self.assertFalse(payload["clipped"])
         self.assertEqual(len(payload["times"]), 28 * 24 + 1)
+
+    def test_series_is_fetched_for_the_outlet_reach_only(self):
+        payload = self.build("2022-04-27-12-00-00")
+        self.assertEqual(payload["feature_id"], 202)
+        self.assertEqual(self.location_ids, [[202]])
+        self.assertEqual(payload["outlet"]["properties"], {"feature_id": 202})
+
+    def test_all_reach_parquet_from_before_the_change_yields_the_outlet_alone(self):
+        # teehr keeps the file on disk, so the outlet must be picked out of it
+        # rather than every reach in it averaged.
+        import pandas as pd
+
+        start, end, _ = fim_logic.hydrograph_fetch_span(datetime(2022, 4, 27), 14)
+        hours = pd.date_range(start, end, freq="h")
+        self.retro_dir.mkdir(parents=True)
+        pd.concat([hourly_rows(hours, [101], 50.0), hourly_rows(hours, [202], 5.0)]).to_parquet(
+            self.retro_dir / fim_logic.retro_parquet_name(start, end)
+        )
+        payload = self.build("2022-04-27-12-00-00")
+        self.assertEqual(len(payload["times"]), len(hours))
+        self.assertEqual(set(payload["values"]), {5.0})
 
     def test_date_outside_the_record_is_a_value_error(self):
         with self.assertRaisesRegex(ValueError, "NWM v3.0 retrospective coverage"):

@@ -527,7 +527,7 @@ def get_flood_map_custom(request, huc8, discharge_str):
 @controller(url="api/get-hydrograph/{huc8}/{date_str}")
 @csrf_exempt
 def get_hydrograph(request, huc8, date_str):
-    """Return hydrograph (times, values) for the given HUC8 + date.
+    """Return the outlet reach's hydrograph (times, values) for a HUC8 + date.
 
     Optional ``?days=N`` widens the span either side of the selected moment;
     ``build_hydrograph_payload`` clamps it to a sane range. Defaults to 14:
@@ -627,7 +627,7 @@ def forecast_options(request):
 @controller(url="api/forecast/hydrograph/{huc8}/{cycle_token}")
 @csrf_exempt
 def forecast_hydrograph(request, huc8, cycle_token):
-    """HUC-mean discharge for all 18 hours of one short-range cycle."""
+    """Outlet-reach discharge for all 18 hours of one short-range cycle."""
     try:
         validate_huc8(huc8)
         return JsonResponse(forecast.build_hydrograph_payload(huc8, cycle_token))

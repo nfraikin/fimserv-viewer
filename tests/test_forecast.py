@@ -14,7 +14,7 @@ Run with:  python -m unittest discover -s tests
 import sys
 import tempfile
 import unittest
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from unittest import mock
 
@@ -196,6 +196,18 @@ class ReadStreamflowTests(unittest.TestCase):
     def test_missing_file_is_reported(self):
         with self.assertRaisesRegex(FileNotFoundError, "not published"):
             forecast.fetch_discharge(CYCLE, self.VALID, [101], FakeFS())
+
+    def test_series_reads_one_reach_and_reports_gaps_as_none(self):
+        fs = FakeFS()
+        for f in range(1, 19):
+            flow = np.nan if f == 5 else float(f)
+            valid = CYCLE + timedelta(hours=f)
+            fs.files[forecast.channel_key(CYCLE, f)] = channel_blob(valid, [101, 202], [1000.0, flow])
+        times, values = forecast.fetch_series(CYCLE, 202, fs)
+        self.assertEqual(times[0], "2026-09-29T15:00:00")
+        self.assertEqual(times[-1], "2026-09-30T08:00:00")
+        self.assertIsNone(values[4])
+        np.testing.assert_allclose(values[:4] + values[5:], [f for f in range(1, 19) if f != 5], rtol=1e-6)
 
     def test_no_reach_with_a_forecast_is_an_error(self):
         blob = channel_blob(self.VALID, [101], [np.nan])

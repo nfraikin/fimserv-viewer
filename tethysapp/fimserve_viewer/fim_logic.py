@@ -35,6 +35,7 @@ import logging
 import os
 import re
 import tempfile
+from collections import Counter
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional, Tuple
@@ -1350,11 +1351,92 @@ def retro_parquet_name(start: datetime, end: datetime) -> str:
     return f"{first}.parquet" if first == last else f"{first}_{last}.parquet"
 
 
+def outlet_feature_id(huc8: str, feature_ids) -> int:
+    """The HUC's outlet reach: the one in ``feature_ids`` that drains the most network.
+
+    ``feature_IDs.csv`` cannot answer this alone. It lists the reaches HAND
+    maps, not a connected network, so it has hundreds of apparent exits where
+    one of its reaches flows into one it leaves out. Upstream stream length is
+    therefore accumulated over the full ``nwm_subset_streams.gpkg`` network
+    (``ID`` flows to ``to``), and the candidate draining the most wins. That
+    reach sits at the downstream end of the largest river, which for an
+    ordinary HUC8 is where it leaves the watershed.
+
+    Raises FileNotFoundError when the stream network is missing or shares no
+    reach with ``feature_ids``.
+    """
+    import geopandas as gpd
+
+    streams_path = _find_huc_file(huc8, "nwm_subset_streams.gpkg")
+    if streams_path is None:
+        raise FileNotFoundError(
+            f"No stream network (nwm_subset_streams.gpkg) for HUC8 {huc8}. "
+            "Generate a flood map first for this HUC8."
+        )
+    streams = gpd.read_file(
+        streams_path, ignore_geometry=True, columns=["ID", "to", "Length"]
+    )
+    ids = streams["ID"].astype("int64").tolist()
+    downstream = dict(zip(ids, streams["to"].astype("int64").tolist()))
+    # Each reach starts with its own length; headwaters are final at once, and
+    # every other reach is final once all the reaches flowing into it have
+    # passed their totals down.
+    drained = dict(zip(ids, streams["Length"].astype(float).tolist()))
+    waiting = Counter(to for to in downstream.values() if to in drained)
+    ready = [rid for rid in ids if waiting[rid] == 0]
+    while ready:
+        rid = ready.pop()
+        to = downstream[rid]
+        if to in drained:
+            drained[to] += drained[rid]
+            waiting[to] -= 1
+            if waiting[to] == 0:
+                ready.append(to)
+
+    candidates = [int(fid) for fid in feature_ids if int(fid) in drained]
+    if not candidates:
+        raise FileNotFoundError(
+            f"None of HUC8 {huc8}'s feature IDs are in its stream network."
+        )
+    return max(candidates, key=drained.__getitem__)
+
+
+def outlet_reach_feature(huc8: str, feature_id: int) -> Optional[dict]:
+    """One reach of the HUC's stream network as a WGS84 GeoJSON Feature, or None.
+
+    For the map's outlet marker. NWM reach lines run upstream to downstream,
+    so the last coordinate is where the reach ends. None (not an error) when
+    the network or the reach is missing: the marker is extra, and its absence
+    should not cost the user the hydrograph.
+    """
+    import geopandas as gpd
+    from shapely.geometry import mapping
+
+    streams_path = _find_huc_file(huc8, "nwm_subset_streams.gpkg")
+    if streams_path is None:
+        return None
+    reach = gpd.read_file(streams_path, where=f"ID = {int(feature_id)}")
+    if reach.empty:
+        return None
+    return {
+        "type": "Feature",
+        "geometry": mapping(reach.to_crs(4326).geometry.iloc[0]),
+        "properties": {"feature_id": int(feature_id)},
+    }
+
+
 def build_hydrograph_payload(
     huc8: str, date_str: str, window_days: int = 14
 ) -> dict:
     """
-    Build {status, times, values, huc8, datetime, window_days, clipped} for the plot.
+    Build {status, times, values, huc8, feature_id, outlet, datetime, window_days,
+    clipped} for the plot.
+
+    The series is the discharge at the HUC's outlet reach (``feature_id``, see
+    ``outlet_feature_id``); ``outlet`` is that reach as GeoJSON for the map
+    (see ``outlet_reach_feature``). Averaging every reach instead, as this once did,
+    weighted a headwater trickle the same as the main stem and so reported a
+    number no place in the watershed actually carried.
 
     ``window_days`` is the half-width of the fetched span: the series runs from
     that many days before the selected moment to the same distance after. A
@@ -1412,6 +1494,7 @@ def build_hydrograph_payload(
         raise FileNotFoundError(
             "No feature IDs found. Generate a flood map first for this HUC8 and date."
         )
+    outlet = outlet_feature_id(huc8, feature_ids)
 
     import teehr.fetching.nwm.retrospective_points as nwm_retro
 
@@ -1425,7 +1508,7 @@ def build_hydrograph_payload(
         variable_name="streamflow",
         start_date=start,
         end_date=end,
-        location_ids=feature_ids,
+        location_ids=[outlet],
         output_parquet_dir=str(retro_dir),
     )
 
@@ -1435,13 +1518,14 @@ def build_hydrograph_payload(
 
     df = pd.read_parquet(parquet_file)
     df["value_time"] = pd.to_datetime(df["value_time"])
-    location_ids_str = [f"nwm30-{int(fid)}" for fid in feature_ids]
-    df_huc = df[df["location_id"].isin(location_ids_str)]
+    # teehr keeps a parquet already on disk for this span rather than
+    # overwriting it, and those from before the outlet change hold every
+    # reach in the HUC, so pick the outlet out rather than taking the file whole.
+    hydro = df[df["location_id"] == f"nwm30-{outlet}"]
 
-    if df_huc.empty:
-        raise FileNotFoundError("No streamflow data for this HUC8.")
+    if hydro.empty:
+        raise FileNotFoundError(f"No streamflow data for outlet reach {outlet}.")
 
-    hydro = df_huc.groupby("value_time")["value"].mean().reset_index()
     hydro = hydro.sort_values("value_time")
 
     times = [t.isoformat() for t in hydro["value_time"]]
@@ -1452,6 +1536,8 @@ def build_hydrograph_payload(
         "times": times,
         "values": values,
         "huc8": huc8,
+        "feature_id": outlet,
+        "outlet": outlet_reach_feature(huc8, outlet),
         "datetime": datetime_str,
         "window_days": window_days,
         "clipped": clipped,
@@ -1512,6 +1598,8 @@ __all__ = [
     "run_custom_discharge_flood_map",
     "build_hydrograph_payload",
     "hydrograph_fetch_span",
+    "outlet_feature_id",
+    "outlet_reach_feature",
     "retro_parquet_name",
     "reclassify_temp_copy",
 ]
