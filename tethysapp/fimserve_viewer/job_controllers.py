@@ -12,7 +12,7 @@ from django.http import HttpRequest, HttpResponse, HttpResponseNotAllowed, JsonR
 from django.views.decorators.csrf import csrf_exempt
 from tethys_sdk.routing import controller
 
-from . import pipelines
+from . import forecast, pipelines
 from .fim_logic import _parse_generate_flood_json_body
 from .jobs import get_job_manager
 from .model import JobKind
@@ -54,6 +54,21 @@ def parse_custom_discharge_body(data: dict) -> Tuple[str, float]:
     if discharge < 0:
         raise ValueError("discharge must be non-negative")
     return str(huc8), discharge
+
+
+def parse_forecast_body(data: dict) -> Tuple[str, str, str]:
+    """Return (huc8, cycle_token, valid_token) from a POST body, raising ValueError when invalid.
+
+    The request names a cycle and a *valid* hour; the forecast hour is
+    derived from the two, never sent, so it cannot disagree with them.
+    """
+    huc8 = str(data.get("huc8") or "")
+    if not huc8.isdigit() or len(huc8) != 8:
+        raise ValueError("huc8 must be an 8-digit code")
+    cycle_token = str(data.get("cycle") or "")
+    valid_token = str(data.get("valid") or "")
+    forecast.validate_forecast_request(cycle_token, valid_token)
+    return huc8, cycle_token, valid_token
 
 
 def require_post(request: HttpRequest) -> Optional[HttpResponse]:
@@ -100,6 +115,38 @@ def submit_custom_job(request):
         key=pipelines.custom_job_key(huc8, discharge),
         params={"discharge": discharge},
         runner=pipelines.run_custom_pipeline,
+    )
+    return job_response(job, created)
+
+
+@controller(url="api/jobs/generate-flood-map-forecast")
+@csrf_exempt
+def submit_forecast_job(request):
+    """Queue a flood map for one NWM short-range forecast hour of a HUC8."""
+    not_post = require_post(request)
+    if not_post is not None:
+        return not_post
+    try:
+        huc8, cycle_token, valid_token = parse_forecast_body(json_body(request))
+    except ValueError as exc:
+        return error_response(str(exc))
+    cycle = forecast.parse_token(cycle_token)
+    fhour = forecast.forecast_hour(cycle, forecast.parse_token(valid_token))
+    try:
+        published = forecast.is_published(cycle, fhour)
+    except Exception as exc:
+        return error_response(f"Could not reach the NWM forecast bucket: {exc}", status=502)
+    if not published:
+        return error_response(
+            f"Cycle {cycle:%Y-%m-%d %H}z f{fhour:03d} is not published. "
+            "Refresh the forecast hours and try again."
+        )
+    job, created = get_job_manager().submit(
+        kind=JobKind.FORECAST,
+        huc8=huc8,
+        key=pipelines.forecast_job_key(huc8, cycle_token, valid_token),
+        params={"cycle": cycle_token, "valid": valid_token, "forecast_hour": fhour},
+        runner=pipelines.run_forecast_pipeline,
     )
     return job_response(job, created)
 

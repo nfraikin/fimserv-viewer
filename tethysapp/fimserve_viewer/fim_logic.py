@@ -1128,9 +1128,6 @@ def build_flood_q_labels(huc8: str, date_str: str) -> Optional[str]:
         huc8: HUC8 code as a string.
         date_str: Either 'YYYY-MM-DD' or 'YYYY-MM-DD-HH-MM-SS'.
     """
-    import geopandas as gpd
-    import pandas as pd
-
     if len(date_str) == 10:
         date_obj = datetime.strptime(date_str, "%Y-%m-%d")
         full_key = None
@@ -1146,6 +1143,17 @@ def build_flood_q_labels(huc8: str, date_str: str) -> Optional[str]:
             break
     if csv_path is None:
         return None
+    return build_q_labels_from_csv(huc8, csv_path)
+
+
+def build_q_labels_from_csv(huc8: str, csv_path) -> Optional[str]:
+    """Q-label GeoJSON from any ``feature_id,discharge`` CSV for a HUC8.
+
+    Shared by the retrospective path (NWM_*.csv picked by date) and the
+    forecast path (the NWMSR_*.csv written for one forecast hour).
+    """
+    import geopandas as gpd
+    import pandas as pd
 
     q_df = pd.read_csv(csv_path)
     if "discharge" not in q_df.columns and "value" in q_df.columns:
@@ -1460,6 +1468,7 @@ __all__ = [
     "to_cog",
     "_empty_feature_collection",
     "build_flood_q_labels",
+    "build_q_labels_from_csv",
     "run_custom_discharge_flood_map",
     "build_hydrograph_payload",
     "reclassify_temp_copy",

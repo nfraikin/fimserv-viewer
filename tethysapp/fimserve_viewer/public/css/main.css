@@ -720,3 +720,151 @@ img.flood-raster-crisp.leaflet-image-layer {
     background: #b2bec3;
     cursor: default;
 }
+
+/* ---- Retrospective / Forecast tabs (issue #31) ------------------------- */
+.mode-tabs {
+    display: flex;
+    margin: -5px 0 18px;
+    border: 1px solid #d6dde3;
+    border-radius: 8px;
+    overflow: hidden;
+}
+
+.mode-tab {
+    flex: 1;
+    padding: 9px 10px;
+    border: none;
+    background: #f4f6f8;
+    color: #5d6d7e;
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background 0.15s, color 0.15s;
+}
+
+.mode-tab + .mode-tab {
+    border-left: 1px solid #d6dde3;
+}
+
+.mode-tab:hover:not(.is-active) {
+    background: #eaeef1;
+}
+
+.mode-tab.is-active {
+    background: #2980b9;
+    color: #fff;
+}
+
+/* Amber marks everything forecast, so it is never mistaken for the archive. */
+.mode-tab[data-mode="forecast"].is-active {
+    background: #d35400;
+}
+
+.mode-tab:focus-visible {
+    outline: 2px solid #2c3e50;
+    outline-offset: -2px;
+}
+
+/* ---- Forecast page ------------------------------------------------------ */
+.forecast-badge {
+    display: inline-block;
+    margin-left: 6px;
+    padding: 2px 7px;
+    border-radius: 10px;
+    background: #fdebd0;
+    color: #a04000;
+    font-size: 10px;
+    letter-spacing: 0.6px;
+    vertical-align: middle;
+}
+
+.forecast-panel {
+    padding: 15px;
+    background: #fff8f0;
+    border: 1px solid #f5d5b5;
+    border-radius: 8px;
+    margin-top: 10px;
+}
+
+.forecast-cycle {
+    font-size: 13px;
+    color: #2c3e50;
+    line-height: 1.4;
+    margin-bottom: 12px;
+}
+
+.forecast-label {
+    display: block;
+    margin-bottom: 5px;
+    font-weight: 600;
+    color: #555;
+}
+
+.forecast-select {
+    width: 100%;
+    padding: 8px;
+    border: 1px solid #ddd;
+    border-radius: 4px;
+    font-size: 13px;
+    background: #fff;
+    color: #2c3e50;
+}
+
+.forecast-hint {
+    font-size: 11px;
+    color: #7f8c8d;
+    line-height: 1.35;
+    margin-top: 4px;
+}
+
+.forecast-warn {
+    color: #a04000;
+}
+
+/* Same sizes and colours as the retrospective page's buttons. */
+.forecast-btn {
+    width: 100%;
+    padding: 10px;
+    margin-top: 10px;
+    border: none;
+    border-radius: 6px;
+    color: #fff;
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background 0.2s;
+}
+
+.forecast-btn--generate {
+    background: #27ae60;
+    padding: 12px;
+    margin-top: 15px;
+    font-size: 16px;
+}
+
+.forecast-btn--download {
+    background: #2980b9;
+}
+
+.forecast-btn--show {
+    background: #3498db;
+}
+
+.forecast-btn:disabled {
+    background: #b2bec3;
+    cursor: default;
+}
+
+.forecast-status {
+    margin-top: 10px;
+    font-size: 12px;
+    color: #7f8c8d;
+}
+
+.flood-legend-source {
+    margin: 0 0 6px;
+    max-width: 240px;
+    font-size: 11px;
+    line-height: 1.35;
+    color: #a04000;
+}

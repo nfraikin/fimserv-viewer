@@ -27,10 +27,11 @@ from django.http import (
 from django.views.decorators.csrf import csrf_exempt
 from tethys_sdk.routing import controller
 
-from . import fim_logic
+from . import fim_logic, forecast
 from .app import App
 from .results import (
     custom_download_name,
+    forecast_pattern,
     labels_name_for_tif,
     nwm_pattern,
     preview_name_for_tif,
@@ -555,3 +556,126 @@ def get_hydrograph(request, huc8, date_str):
         return JsonResponse(
             {"status": "error", "message": str(exc)}, status=500
         )
+
+
+# =============================================================================
+# Forecast (issue #31): NWM short-range results, keyed by cycle + valid hour.
+#
+# Every endpoint validates huc8 and both hour tokens strictly before they are
+# used, because they become storage filename patterns.
+# =============================================================================
+def forecast_key_or_error(huc8, cycle_token, valid_token):
+    """Return (key, None) for a stored forecast result, or (None, JsonResponse)."""
+    try:
+        validate_huc8(huc8)
+        forecast.parse_token(cycle_token)
+        forecast.parse_token(valid_token)
+    except ValueError as exc:
+        return None, JsonResponse({"status": "error", "message": str(exc)}, status=400)
+    key = results.find(huc8, forecast_pattern(huc8, cycle_token, valid_token))
+    if key is None:
+        return None, JsonResponse(
+            {
+                "status": "error",
+                "message": (
+                    f"No forecast flood map found for HUC8 {huc8}, cycle "
+                    f"{cycle_token}, valid {valid_token}. Generate it first."
+                ),
+            },
+            status=404,
+        )
+    return key, None
+
+
+def validate_huc8(huc8):
+    if not (str(huc8).isdigit() and len(str(huc8)) == 8):
+        raise ValueError("huc8 must be an 8-digit code")
+
+
+@controller(url="api/forecast/options")
+@csrf_exempt
+def forecast_options(request):
+    """Newest complete short-range cycle and its forecast hours still ahead.
+
+    With ``?huc8=`` also reports whether that HUC's hydrofabric is already on
+    disk, so the page can warn about the first-run download up front.
+    """
+    try:
+        payload = forecast.forecast_options()
+    except LookupError as exc:
+        return JsonResponse({"status": "error", "message": str(exc)}, status=503)
+    except Exception as exc:
+        traceback.print_exc()
+        return JsonResponse(
+            {"status": "error", "message": f"Could not list NWM forecasts: {exc}"},
+            status=502,
+        )
+    huc8 = request.GET.get("huc8")
+    if huc8:
+        try:
+            validate_huc8(huc8)
+        except ValueError as exc:
+            return JsonResponse({"status": "error", "message": str(exc)}, status=400)
+        payload["hydrofabric_cached"] = not fim_logic._missing_step1_artifacts(huc8)
+    return JsonResponse({"status": "success", **payload})
+
+
+@controller(url="api/forecast/hydrograph/{huc8}/{cycle_token}")
+@csrf_exempt
+def forecast_hydrograph(request, huc8, cycle_token):
+    """HUC-mean discharge for all 18 hours of one short-range cycle."""
+    try:
+        validate_huc8(huc8)
+        return JsonResponse(forecast.build_hydrograph_payload(huc8, cycle_token))
+    except ValueError as exc:
+        return JsonResponse({"status": "error", "message": str(exc)}, status=400)
+    except FileNotFoundError as exc:
+        return JsonResponse({"status": "error", "message": str(exc)}, status=404)
+    except Exception as exc:
+        traceback.print_exc()
+        return JsonResponse({"status": "error", "message": str(exc)}, status=500)
+
+
+@controller(url="api/flood-map-preview/forecast/{huc8}/{cycle_token}/{valid_token}")
+@csrf_exempt
+def flood_map_preview_forecast(request, huc8, cycle_token, valid_token):
+    """PNG preview + bounds for a forecast flood map."""
+    key, error = forecast_key_or_error(huc8, cycle_token, valid_token)
+    if error is not None:
+        return error
+    try:
+        return JsonResponse({"status": "success", **preview_payload(huc8, key)})
+    except Exception as exc:
+        return JsonResponse({"status": "error", "message": str(exc)}, status=500)
+
+
+@controller(url="api/flood-q-labels/forecast/{huc8}/{cycle_token}/{valid_token}")
+@csrf_exempt
+def flood_q_labels_forecast(request, huc8, cycle_token, valid_token):
+    """Streamflow labels stored beside a forecast result (empty if none).
+
+    Unlike the retrospective endpoint there is no recompute fallback: the
+    forecast CSV is removed once its job has published these labels.
+    """
+    key, error = forecast_key_or_error(huc8, cycle_token, valid_token)
+    if error is not None:
+        return error
+    geojson_str = results.text(labels_name_for_tif(key))
+    if geojson_str is None:
+        geojson_str = json.dumps(fim_logic._empty_feature_collection())
+    return HttpResponse(geojson_str, content_type="application/geo+json")
+
+
+@controller(url="api/get-flood-map-forecast/{huc8}/{cycle_token}/{valid_token}")
+@csrf_exempt
+def get_flood_map_forecast(request, huc8, cycle_token, valid_token):
+    """Download a forecast flood map .tif (optionally reclassified to 0/1)."""
+    key, error = forecast_key_or_error(huc8, cycle_token, valid_token)
+    if error is not None:
+        return error
+    try:
+        if request.GET.get("reclass", "0") == "1":
+            return reclassified_response(key, f"{Path(key).stem}_reclassified.tif")
+        return results.response(key, download_name=Path(key).name)
+    except Exception as exc:
+        return JsonResponse({"status": "error", "message": str(exc)}, status=500)
