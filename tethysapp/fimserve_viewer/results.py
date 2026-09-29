@@ -79,6 +79,15 @@ def custom_download_name(huc8: str, key: str, suffix: str = "") -> str:
     return f"{huc8}_customQ{token}{suffix}.tif"
 
 
+def forecast_pattern(huc8: str, cycle_token: str, valid_token: str) -> str:
+    """Filename of the forecast result for one cycle and valid hour.
+
+    Always exact: tokens are validated as ``YYYYmmddHH`` before they get
+    here, so there is no wildcard to match some other cycle's raster.
+    """
+    return f"NWMSR_{cycle_token}_{valid_token}_{huc8}_inundation.tif"
+
+
 def labels_name_for_tif(tif_name: str) -> str:
     """Streamflow-labels filename co-named with a result tif."""
     return tif_name.replace("_inundation.tif", "_qlabels.geojson")

@@ -43,7 +43,7 @@
               <div class="flood-success-icon-inner">🌊</div>
           </div>
           <h2 id="flood-success-heading" class="flood-success-heading">Your flood map just made a splash!</h2>
-          <p class="flood-success-tagline">NWM streamflow met HAND - the inundation raster is ready.</p>
+          <p class="flood-success-tagline" id="flood-success-tagline">NWM streamflow met HAND - the inundation raster is ready.</p>
           <div id="flood-success-detail" class="flood-success-detail"></div>
           <button type="button" class="flood-success-ok" id="flood-success-ok">Got it</button>
       </div>
@@ -51,6 +51,7 @@
   <div id="map"></div>
   <div id="flood-legend" style="display: none; position: absolute; bottom: 30px; left: 10px; z-index: 1000; background: white; padding: 10px 14px; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.2); font-size: 13px;">
       <div style="font-weight: 600; margin-bottom: 6px; color: #333;">Flood extent</div>
+      <div id="flood-legend-source" class="flood-legend-source" hidden></div>
       <div style="display: flex; align-items: center; gap: 8px;">
           <span style="width: 20px; height: 16px; background: #1E88E5; border-radius: 2px;"></span>
           <span style="color: #555;">Flooded areas</span>
@@ -77,6 +78,12 @@
       <div class="sidebar-header">
           <h2>HUC8 Details</h2>
           <button class="close-btn" onclick="closeSidebar()">×</button>
+      </div>
+      {# Two pages for one watershed: the retrospective record, or the live NWM #}
+      {# short-range forecast. main.js swaps the page and remembers the choice. #}
+      <div class="mode-tabs" role="tablist" aria-label="Flood data source">
+          <button type="button" role="tab" class="mode-tab is-active" id="mode-tab-retro" data-mode="retro" aria-selected="true" aria-controls="sidebar-content">Retrospective</button>
+          <button type="button" role="tab" class="mode-tab" id="mode-tab-forecast" data-mode="forecast" aria-selected="false" aria-controls="sidebar-content" tabindex="-1">Forecast</button>
       </div>
       <div id="sidebar-content">
           <div class="no-selection">

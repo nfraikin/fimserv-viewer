@@ -12,6 +12,7 @@ Base = declarative_base()
 class JobKind:
     NWM = "nwm"
     CUSTOM = "custom"
+    FORECAST = "forecast"
 
 
 class JobStatus:
