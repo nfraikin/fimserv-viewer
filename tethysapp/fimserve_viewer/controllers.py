@@ -543,6 +543,10 @@ def get_hydrograph(request, huc8, date_str):
             huc8, date_str, window_days=window_days
         )
         return JsonResponse(payload)
+    except ValueError as exc:  # unparseable, or outside the retrospective record
+        return JsonResponse(
+            {"status": "error", "message": str(exc)}, status=400
+        )
     except FileNotFoundError as exc:
         return JsonResponse(
             {"status": "error", "message": str(exc)}, status=404

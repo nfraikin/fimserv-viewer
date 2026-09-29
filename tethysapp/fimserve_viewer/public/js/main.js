@@ -1274,10 +1274,14 @@ function handleHydrographKey(ctx, evt) {
 }
 
 function retroHydrographNote(times) {
+    // Near either end of the record the server trims the window, so it is
+    // lopsided; say why rather than leave the reader to wonder.
+    const trimmed = hydroRetro.data && hydroRetro.data.clipped
+        ? ', trimmed where the NWM retrospective record ends' : '';
     return times.length + ' hourly samples, '
         + escapeHtml(String(times[0]).slice(0, 10)) + ' to '
         + escapeHtml(String(times[times.length - 1]).slice(0, 10))
-        + ' (±' + hydroWindowDays + (hydroWindowDays === 1 ? ' day' : ' days')
+        + ' (±' + hydroWindowDays + (hydroWindowDays === 1 ? ' day' : ' days') + trimmed
         + '). Click the plot to set the date and time, then use ← → to step hour by hour '
         + '(hold Shift for a day, Home/End for the ends).';
 }
@@ -1359,7 +1363,7 @@ async function loadHydrograph(huc8) {
             return;
         }
 
-        ctx.data = { times: data.times, values: data.values };
+        ctx.data = { times: data.times, values: data.values, clipped: !!data.clipped };
         // The API echoes the requested moment as "YYYY-MM-DD HH:MM:SS"; the series
         // uses ISO "T" form, so normalise before matching it to a sample.
         ctx.selTime = data.datetime ? String(data.datetime).replace(' ', 'T') : data.times[0];
