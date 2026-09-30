@@ -5,11 +5,53 @@ const map = L.map('map', {
     markerZoomAnimation: false,
 }).setView([39.8283, -98.5795], 4);
 
-// Add OpenStreetMap basemap
-L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-    attribution: '© OpenStreetMap contributors',
-    maxZoom: 19
-}).addTo(map);
+// Basemaps, switched from a control under the zoom buttons (top right would sit
+// under the open sidebar). OpenStreetMap streets stay the default. The USGS
+// National Map imagery is public domain and covers CONUS, like HAND-FIM, and
+// shows what is actually on the ground, to check a flood map or an NWM river
+// line against. USGS caches its tiles only to zoom 16, so Leaflet enlarges
+// those beyond it instead of showing blank tiles.
+const USGS_TILES = 'https://basemap.nationalmap.gov/arcgis/rest/services/{service}/MapServer/tile/{z}/{y}/{x}';
+const USGS_ATTRIBUTION = 'Imagery: <a href="https://www.usgs.gov/programs/national-geospatial-program/national-map">USGS The National Map</a>';
+const BASEMAPS = {
+    'Streets': L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        attribution: '© OpenStreetMap contributors',
+        maxZoom: 19
+    }),
+    'Imagery': L.tileLayer(USGS_TILES, {
+        service: 'USGSImageryOnly',
+        attribution: USGS_ATTRIBUTION,
+        maxNativeZoom: 16,
+        maxZoom: 19
+    }),
+    'Imagery with labels': L.tileLayer(USGS_TILES, {
+        service: 'USGSImageryTopo',
+        attribution: USGS_ATTRIBUTION,
+        maxNativeZoom: 16,
+        maxZoom: 19
+    }),
+};
+
+/** The chosen basemap is remembered per browser, like the sidebar mode. */
+const BASEMAP_KEY = 'fimserve_viewer.basemap';
+(function addBasemaps() {
+    let name = 'Streets';
+    try {
+        const saved = localStorage.getItem(BASEMAP_KEY);
+        if (saved && Object.prototype.hasOwnProperty.call(BASEMAPS, saved)) name = saved;
+    } catch (e) {
+        // storage blocked (private window, previews): start on the default
+    }
+    BASEMAPS[name].addTo(map);
+    L.control.layers(BASEMAPS, null, { position: 'topleft' }).addTo(map);
+    map.on('baselayerchange', function (e) {
+        try {
+            localStorage.setItem(BASEMAP_KEY, e.name);
+        } catch (err) {
+            // not remembered; the switch itself still happened
+        }
+    });
+})();
 
 // Create a high z-index pane for flood overlay so it appears above HUC8 polygons
 if (!map.getPane('floodOverlayPane')) {
