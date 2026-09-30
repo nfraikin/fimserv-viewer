@@ -35,6 +35,7 @@ import logging
 import os
 import re
 import tempfile
+from collections import Counter
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional, Tuple
@@ -1350,11 +1351,198 @@ def retro_parquet_name(start: datetime, end: datetime) -> str:
     return f"{first}.parquet" if first == last else f"{first}_{last}.parquet"
 
 
+# ``Lake`` value of an NWM reach that is not part of a reservoir.
+NWM_NO_LAKE = -9999
+
+
+def _huc_polygon(huc8: str, crs):
+    """The HUC8 boundary as one polygon in ``crs``, or None when unavailable."""
+    boundary = _get_huc8_boundary_for_mask(huc8)
+    if boundary is None or boundary.empty:
+        return None
+    if boundary.crs is None:
+        boundary = boundary.set_crs(4326)
+    return boundary.to_crs(crs).union_all()
+
+
+def _line_start(geom):
+    """First vertex of a (Multi)LineString: its upstream end, for NWM reaches."""
+    from shapely.geometry import Point
+
+    line = geom.geoms[0] if geom.geom_type == "MultiLineString" else geom
+    return Point(line.coords[0])
+
+
+def _load_stream_network(huc8: str):
+    """``(streams, polygon)``: the HUC's NWM reaches indexed by ``ID``, and its boundary.
+
+    NWM reach lines run upstream to downstream. ``polygon`` (in the streams'
+    CRS) is None when no boundary is available; callers then skip the
+    in-HUC checks rather than fail. Raises FileNotFoundError when the stream
+    network is missing.
+    """
+    import geopandas as gpd
+
+    streams_path = _find_huc_file(huc8, "nwm_subset_streams.gpkg")
+    if streams_path is None:
+        raise FileNotFoundError(
+            f"No stream network (nwm_subset_streams.gpkg) for HUC8 {huc8}. "
+            "Generate a flood map first for this HUC8."
+        )
+    streams = gpd.read_file(streams_path, columns=["ID", "to", "Length", "Lake"])
+    streams["ID"] = streams["ID"].astype("int64")
+    streams["to"] = streams["to"].astype("int64")
+    streams["Lake"] = streams["Lake"].astype("int64")
+    streams = streams.drop_duplicates("ID").set_index("ID")
+    return streams, _huc_polygon(huc8, streams.crs)
+
+
+def _reaches_with_nwm_flow(streams) -> set:
+    """The reaches NWM reports streamflow for.
+
+    NWM routes water through a reservoir as a whole, so the reaches inside one
+    (``Lake`` set) have no streamflow of their own; only the lake's outflow
+    reach, whose downstream reach is outside the lake, does. Checked against
+    the v3.0 retrospective on five HUCs: every non-lake reach had flow and no
+    lake-interior reach did. A lake reach draining to a reach missing from the
+    subset cannot be told apart from an interior one, so it is left out; that
+    missed one real outflow in 42 and never kept a reach without flow.
+    """
+    lake = streams["Lake"]
+    flowing = set()
+    for rid, own, to in zip(streams.index, lake, streams["to"]):
+        if own == NWM_NO_LAKE or (to in lake.index and lake[to] != own):
+            flowing.add(rid)
+    return flowing
+
+
+def outlet_feature_id(huc8: str, feature_ids) -> int:
+    """The HUC's outlet reach: the one in ``feature_ids`` that drains the most network.
+
+    ``feature_IDs.csv`` cannot answer this alone. It lists the reaches HAND
+    maps, not a connected network, so it has hundreds of apparent exits where
+    one of its reaches flows into one it leaves out. Upstream stream length is
+    therefore accumulated over the full ``nwm_subset_streams.gpkg`` network
+    (``ID`` flows to ``to``), and the candidate draining the most wins. That
+    reach sits at the downstream end of the largest river, which for an
+    ordinary HUC8 is where it leaves the watershed.
+
+    Two kinds of reach are passed over. Reaches inside a reservoir have no NWM
+    streamflow (see ``_reaches_with_nwm_flow``); a HUC whose river leaves
+    through one gets the reach where the river enters it instead of an empty
+    hydrograph. Reaches that start outside the HUC are buffer, downstream of
+    the real outlet.
+
+    Raises FileNotFoundError when the stream network is missing or none of
+    ``feature_ids`` qualifies.
+    """
+    streams, polygon = _load_stream_network(huc8)
+    ids = streams.index.tolist()
+    downstream = dict(zip(ids, streams["to"].tolist()))
+    # Each reach starts with its own length; headwaters are final at once, and
+    # every other reach is final once all the reaches flowing into it have
+    # passed their totals down.
+    drained = dict(zip(ids, streams["Length"].astype(float).tolist()))
+    waiting = Counter(to for to in downstream.values() if to in drained)
+    ready = [rid for rid in ids if waiting[rid] == 0]
+    while ready:
+        rid = ready.pop()
+        to = downstream[rid]
+        if to in drained:
+            drained[to] += drained[rid]
+            waiting[to] -= 1
+            if waiting[to] == 0:
+                ready.append(to)
+
+    candidates = [int(fid) for fid in feature_ids if int(fid) in drained]
+    if not candidates:
+        raise FileNotFoundError(
+            f"None of HUC8 {huc8}'s feature IDs are in its stream network."
+        )
+    flowing = _reaches_with_nwm_flow(streams)
+    candidates = [
+        fid
+        for fid in candidates
+        if fid in flowing
+        and (polygon is None or _line_start(streams.geometry[fid]).within(polygon))
+    ]
+    if not candidates:
+        raise FileNotFoundError(f"No reach in HUC8 {huc8} has NWM streamflow to plot.")
+    return max(candidates, key=drained.__getitem__)
+
+
+def _enters_reservoir(streams, polygon, feature_id: int) -> bool:
+    """Whether a reservoir lies between this reach and where its river leaves the HUC."""
+    seen = set()
+    rid = streams.at[feature_id, "to"]
+    while rid in streams.index and rid not in seen:
+        seen.add(rid)
+        if polygon is not None and not _line_start(streams.geometry[rid]).within(polygon):
+            return False
+        if streams.at[rid, "Lake"] != NWM_NO_LAKE:
+            return True
+        rid = streams.at[rid, "to"]
+    return False
+
+
+def outlet_reach_feature(huc8: str, feature_id: int) -> Optional[dict]:
+    """One reach of the HUC's stream network as a WGS84 GeoJSON Feature, or None.
+
+    For the map's outlet marker, placed at ``properties.marker`` ([lon, lat]):
+    where the reach crosses out of the HUC, or its downstream end when it
+    ends inside. The outlet reach often runs well past the boundary (3.6 km
+    on 03020103), so its end alone would put the marker outside the
+    watershed; lines run upstream to downstream, so the exit is the point of
+    the reach's in-HUC part furthest along it. ``properties.enters_reservoir``
+    says the reach stops short of the HUC's edge because its river leaves
+    through a reservoir, where NWM has no flow (see ``outlet_feature_id``).
+
+    None (not an error) when the network or the reach is missing: the marker
+    is extra, and its absence should not cost the user the hydrograph.
+    """
+    import geopandas as gpd
+    import shapely
+    from shapely.geometry import Point, mapping
+
+    try:
+        streams, polygon = _load_stream_network(huc8)
+    except FileNotFoundError:
+        return None
+    feature_id = int(feature_id)
+    if feature_id not in streams.index:
+        return None
+    line = streams.geometry[feature_id]
+    inside = line.intersection(polygon) if polygon is not None else None
+    if inside is None or inside.is_empty:
+        exit_point = Point(shapely.get_coordinates(line)[-1])
+    else:
+        exit_point = max(
+            (Point(xy) for xy in shapely.get_coordinates(inside)), key=line.project
+        )
+    wgs84 = gpd.GeoSeries([line, exit_point], crs=streams.crs).to_crs(4326)
+    return {
+        "type": "Feature",
+        "geometry": mapping(wgs84.iloc[0]),
+        "properties": {
+            "feature_id": feature_id,
+            "marker": [wgs84.iloc[1].x, wgs84.iloc[1].y],
+            "enters_reservoir": _enters_reservoir(streams, polygon, feature_id),
+        },
+    }
+
+
 def build_hydrograph_payload(
     huc8: str, date_str: str, window_days: int = 14
 ) -> dict:
     """
-    Build {status, times, values, huc8, datetime, window_days, clipped} for the plot.
+    Build {status, times, values, huc8, feature_id, outlet, datetime, window_days,
+    clipped} for the plot.
+
+    The series is the discharge at the HUC's outlet reach (``feature_id``, see
+    ``outlet_feature_id``); ``outlet`` is that reach as GeoJSON for the map
+    (see ``outlet_reach_feature``). Averaging every reach instead, as this once did,
+    weighted a headwater trickle the same as the main stem and so reported a
+    number no place in the watershed actually carried.
 
     ``window_days`` is the half-width of the fetched span: the series runs from
     that many days before the selected moment to the same distance after. A
@@ -1412,6 +1600,7 @@ def build_hydrograph_payload(
         raise FileNotFoundError(
             "No feature IDs found. Generate a flood map first for this HUC8 and date."
         )
+    outlet = outlet_feature_id(huc8, feature_ids)
 
     import teehr.fetching.nwm.retrospective_points as nwm_retro
 
@@ -1425,7 +1614,7 @@ def build_hydrograph_payload(
         variable_name="streamflow",
         start_date=start,
         end_date=end,
-        location_ids=feature_ids,
+        location_ids=[outlet],
         output_parquet_dir=str(retro_dir),
     )
 
@@ -1435,13 +1624,14 @@ def build_hydrograph_payload(
 
     df = pd.read_parquet(parquet_file)
     df["value_time"] = pd.to_datetime(df["value_time"])
-    location_ids_str = [f"nwm30-{int(fid)}" for fid in feature_ids]
-    df_huc = df[df["location_id"].isin(location_ids_str)]
+    # teehr keeps a parquet already on disk for this span rather than
+    # overwriting it, and those from before the outlet change hold every
+    # reach in the HUC, so pick the outlet out rather than taking the file whole.
+    hydro = df[df["location_id"] == f"nwm30-{outlet}"]
 
-    if df_huc.empty:
-        raise FileNotFoundError("No streamflow data for this HUC8.")
+    if hydro.empty:
+        raise FileNotFoundError(f"No streamflow data for outlet reach {outlet}.")
 
-    hydro = df_huc.groupby("value_time")["value"].mean().reset_index()
     hydro = hydro.sort_values("value_time")
 
     times = [t.isoformat() for t in hydro["value_time"]]
@@ -1452,6 +1642,8 @@ def build_hydrograph_payload(
         "times": times,
         "values": values,
         "huc8": huc8,
+        "feature_id": outlet,
+        "outlet": outlet_reach_feature(huc8, outlet),
         "datetime": datetime_str,
         "window_days": window_days,
         "clipped": clipped,
@@ -1512,6 +1704,8 @@ __all__ = [
     "run_custom_discharge_flood_map",
     "build_hydrograph_payload",
     "hydrograph_fetch_span",
+    "outlet_feature_id",
+    "outlet_reach_feature",
     "retro_parquet_name",
     "reclassify_temp_copy",
 ]

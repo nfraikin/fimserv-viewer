@@ -272,11 +272,12 @@ def fetch_discharge(cycle: datetime, valid: datetime, feature_ids, fs=None):
     return frame
 
 
-def fetch_series(cycle: datetime, feature_ids, fs=None) -> tuple:
-    """HUC-mean discharge for every hour of a cycle: ``(times, values)``.
+def fetch_series(cycle: datetime, feature_id: int, fs=None) -> tuple:
+    """One reach's discharge for every hour of a cycle: ``(times, values)``.
 
-    Downloads run in parallel (network-bound); parsing is serialized by the
-    netCDF lock. About 12 MB per hour, ~13 s for the whole cycle.
+    An hour with no value for the reach comes back as None. Downloads run in
+    parallel (network-bound); parsing is serialized by the netCDF lock. About
+    12 MB per hour, ~13 s for the whole cycle.
     """
     import numpy as np
 
@@ -286,9 +287,9 @@ def fetch_series(cycle: datetime, feature_ids, fs=None) -> tuple:
         blobs = list(pool.map(fs.cat, keys))
     times, values = [], []
     for blob in blobs:
-        valid, flows = read_streamflow(blob, feature_ids)
+        valid, flows = read_streamflow(blob, [feature_id])
         times.append(valid.isoformat())
-        values.append(float(np.nanmean(flows)) if np.isfinite(flows).any() else None)
+        values.append(float(flows[0]) if np.isfinite(flows[0]) else None)
     return times, values
 
 
@@ -317,8 +318,11 @@ _hydrograph_lock = threading.Lock()
 def build_hydrograph_payload(huc8: str, cycle_token: str) -> dict:
     """Forecast hydrograph for a HUC8 and cycle, as the retrospective one's shape.
 
-    A cycle never changes once complete, so the series is cached in memory
-    per (HUC8, cycle); only the first view of each pays for the downloads.
+    Like the retrospective one, the series is the HUC's outlet reach
+    (``feature_id``; see ``fim_logic.outlet_feature_id``), and ``outlet`` is
+    that reach as GeoJSON for the map. A cycle never
+    changes once complete, so the series is cached in memory per (HUC8,
+    cycle); only the first view of each pays for the downloads.
     """
     cycle = parse_token(cycle_token)
     cache_key = (huc8, cycle_token)
@@ -327,8 +331,14 @@ def build_hydrograph_payload(huc8: str, cycle_token: str) -> dict:
         if cached is not None:
             _hydrograph_cache.move_to_end(cache_key)
     if cached is None:
-        times, values = fetch_series(cycle, feature_ids_for_huc(huc8))
-        cached = {"times": times, "values": values}
+        outlet = fim_logic.outlet_feature_id(huc8, feature_ids_for_huc(huc8))
+        times, values = fetch_series(cycle, outlet)
+        cached = {
+            "feature_id": outlet,
+            "outlet": fim_logic.outlet_reach_feature(huc8, outlet),
+            "times": times,
+            "values": values,
+        }
         with _hydrograph_lock:
             _hydrograph_cache[cache_key] = cached
             while len(_hydrograph_cache) > _HYDROGRAPH_CACHE_SIZE:

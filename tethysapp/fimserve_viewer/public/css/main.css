@@ -868,3 +868,28 @@ img.flood-raster-crisp.leaflet-image-layer {
     line-height: 1.35;
     color: #a04000;
 }
+
+/* ---- Hydrograph outlet link ------------------------------------------- */
+/* The reach ID in a hydrograph note pans the map to the outlet marker, so it
+   reads as a link in the note's own size, not as another button. */
+.hydrograph-outlet-link {
+    padding: 0;
+    border: none;
+    background: none;
+    font: inherit;
+    color: #2980b9;
+    text-decoration: underline;
+    cursor: pointer;
+}
+
+.hydrograph-outlet-link:hover {
+    color: #1f6391;
+}
+
+/* The outlet's tooltip shares a pane with its marker, and Leaflet stacks a
+   pane's SVG at z-index 200; lift the tooltip over the marker it labels.
+   Leaflet drops "Pane" from the pane's name in its class, hence
+   .leaflet-hydroOutlet-pane for the pane created as 'hydroOutletPane'. */
+.leaflet-hydroOutlet-pane .leaflet-tooltip {
+    z-index: 300;
+}
