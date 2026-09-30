@@ -16,12 +16,14 @@ body {
     z-index: 1;
 }
 
+/* Start below Tethys's fixed 50px app header, which otherwise covers the
+   sidebar's title and close button. */
 .sidebar {
     position: fixed;
-    top: 0;
+    top: 50px;
     right: -400px;
     width: 400px;
-    height: 100vh;
+    height: calc(100vh - 50px);
     background: white;
     box-shadow: -2px 0 10px rgba(0,0,0,0.1);
     transition: right 0.3s ease;
