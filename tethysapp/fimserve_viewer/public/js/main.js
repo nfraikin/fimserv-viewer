@@ -26,7 +26,7 @@ if (!map.getPane('floodLabelsPane')) {
 }
 if (!map.getPane('hydroOutletPane')) {
     map.createPane('hydroOutletPane');
-    /* Above the flood raster (650) so the reach shows on top of the blue, below
+    /* Above the flood raster (650) so the marker shows on top of the blue, below
        the discharge labels (820) so it never hides a number. */
     map.getPane('hydroOutletPane').style.zIndex = 700;
 }
@@ -1359,9 +1359,10 @@ function clearHydrograph() {
 }
 
 // -----------------------------------------------------------------------------
-// Outlet reach on the map: the reach both hydrographs plot, highlighted, with a
-// marker where it leaves the watershed (or enters a reservoir). Both panels
-// share it, since a watershed has one outlet.
+// Outlet on the map: a marker where the reach both hydrographs plot leaves the
+// watershed (or enters a reservoir), naming the reach on hover. The reach
+// itself is not drawn; a highlighted line competed with the flood map. Both
+// panels share the marker, since a watershed has one outlet.
 // -----------------------------------------------------------------------------
 const HYDRO_OUTLET_COLOR = '#e67e22';   // orange: apart from the blue flood and labels
 let hydroOutletLayer = null;
@@ -1370,7 +1371,7 @@ let hydroOutletLatLng = null;
 /** True when the river leaves through a reservoir and the reach stops short of it. */
 let hydroOutletEntersReservoir = false;
 
-/** Draw the outlet reach from a hydrograph response's `outlet` Feature. */
+/** Mark the outlet from a hydrograph response's `outlet` Feature. */
 function showHydrographOutlet(feature) {
     if (!feature || !feature.geometry || !feature.properties || !feature.properties.marker) return;
     const fid = feature.properties.feature_id;
@@ -1380,23 +1381,17 @@ function showHydrographOutlet(feature) {
     hydroOutletEntersReservoir = !!props.enters_reservoir;
     const label = (hydroOutletEntersReservoir ? 'Hydrograph reach, entering a reservoir' : 'Hydrograph outlet')
         + '<br>NWM reach ' + escapeHtml(String(fid));
-    const reach = L.geoJSON(feature, {
-        pane: 'hydroOutletPane',
-        interactive: false,
-        style: { color: HYDRO_OUTLET_COLOR, weight: 6, opacity: 0.9 },
-    });
     // The server places the marker where the reach leaves the watershed; the
     // reach itself often runs on past the boundary.
     hydroOutletLatLng = [props.marker[1], props.marker[0]];
-    const marker = L.circleMarker(hydroOutletLatLng, {
+    hydroOutletLayer = L.circleMarker(hydroOutletLatLng, {
         pane: 'hydroOutletPane',
         radius: 8,
         color: '#fff',
         weight: 2,
         fillColor: HYDRO_OUTLET_COLOR,
         fillOpacity: 1,
-    }).bindTooltip(label, { pane: 'hydroOutletPane', direction: 'top', offset: [0, -8] });
-    hydroOutletLayer = L.layerGroup([reach, marker]).addTo(map);
+    }).bindTooltip(label, { pane: 'hydroOutletPane', direction: 'top', offset: [0, -8] }).addTo(map);
     hydroOutletFeatureId = fid;
 }
 
