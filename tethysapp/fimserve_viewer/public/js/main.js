@@ -1,19 +1,65 @@
 // zoomAnimation off: custom flood homography (matrix3d) cannot stay glued to tiles during
 // Leaflet's CSS zoom transition; instant zoom keeps geography and overlay in sync.
+// maxBounds: Mapbox will not show past the top or bottom of the world, so
+// Leaflet stops there too (see fitMinZoomToMapHeight).
 const map = L.map('map', {
     zoomAnimation: false,
     markerZoomAnimation: false,
+    maxBounds: [[-85.0511, -1080], [85.0511, 1080]],
+    maxBoundsViscosity: 1.0,
 }).setView([39.8283, -98.5795], 4);
 
 // Basemaps, switched from a control under the zoom buttons (top right would sit
-// under the open sidebar). OpenStreetMap streets stay the default. The USGS
+// under the open sidebar). The Mapbox light map is the default, as in the
+// nwm-map-app this viewer borrows its NWM river reaches from. The USGS
 // National Map imagery is public domain and covers CONUS, like HAND-FIM, and
 // shows what is actually on the ground, to check a flood map or an NWM river
 // line against. USGS caches its tiles only to zoom 16, so Leaflet enlarges
 // those beyond it instead of showing blank tiles.
+//
+// Mapbox maps are WebGL, drawn inside Leaflet by the mapbox-gl-leaflet plugin.
+// The token is BYU Hydroinformatics' public (pk.) one, which also owns the NWM
+// reach tileset. The server reads it from the keys file (local_keys.py) rather
+// than the code, where GitHub's push protection rejects it; without one, the
+// Mapbox basemap and NWM reaches are left out and Streets is the default.
+const MAPBOX_TOKEN = (window.APP_STATIC && window.APP_STATIC.mapboxToken) || '';
+if (!MAPBOX_TOKEN) {
+    console.warn('No MAPBOX_TOKEN in ~/.fimserve_viewer/keys.env: the Mapbox basemap and NWM reaches are off.');
+}
+const MAPBOX_ATTRIBUTION = '© <a href="https://www.mapbox.com/about/maps/">Mapbox</a> © <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>';
 const USGS_TILES = 'https://basemap.nationalmap.gov/arcgis/rest/services/{service}/MapServer/tile/{z}/{y}/{x}';
 const USGS_ATTRIBUTION = 'Imagery: <a href="https://www.usgs.gov/programs/national-geospatial-program/national-map">USGS The National Map</a>';
-const BASEMAPS = {
+
+/** A Mapbox GL map as a Leaflet layer. Mercator, because Mapbox v3 would
+ *  otherwise draw a globe at low zoom that no longer lines up with Leaflet.
+ *  No padding: the plugin draws a margin around the view, and a margin past
+ *  the edge of the world makes Mapbox shift its view away from Leaflet's. */
+function mapboxLayer(options, LayerClass) {
+    return new (LayerClass || L.MapboxGL)(Object.assign({
+        accessToken: MAPBOX_TOKEN,
+        projection: 'mercator',
+        padding: 0,
+    }, options));
+}
+
+/** Mapbox will not zoom out past where the world fills the map's height (it
+ *  zooms itself back in), so Leaflet stops there too. Otherwise, e.g. after
+ *  fitting every HUC8, the Mapbox layers would sit at a different scale and
+ *  place than the polygons and flood maps. Leaflet's world is 256px tall at
+ *  zoom 0, the same as Mapbox's with its zoom offset of one. */
+function fitMinZoomToMapHeight() {
+    const height = map.getSize().y;
+    if (height > 0) map.setMinZoom(Math.ceil(Math.log2(height / 256)));
+}
+fitMinZoomToMapHeight();
+map.on('resize', fitMinZoomToMapHeight);
+
+const BASEMAPS = Object.assign(MAPBOX_TOKEN ? {
+    'Mapbox': mapboxLayer({
+        style: 'mapbox://styles/mapbox/light-v11',
+        attribution: MAPBOX_ATTRIBUTION,
+    }),
+} : {}, {
     'Streets': L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
         attribution: '© OpenStreetMap contributors',
         maxZoom: 19
@@ -30,25 +76,152 @@ const BASEMAPS = {
         maxNativeZoom: 16,
         maxZoom: 19
     }),
+});
+
+// NWM river reaches, drawn from the same vector tileset and styling as
+// nwm-map-app: thicker lines for higher stream orders. Their own pane sits above
+// the HUC8 polygons (overlayPane, 400) and below the flood raster (650), and
+// lets clicks through so the polygons stay clickable. The tileset's tiles below
+// Mapbox zoom 7 (Leaflet 8) are garbled into stripes, even on a plain Mapbox
+// map, so reaches only show from there in. The smallest streams come in later,
+// as their own zoom-in, since orders 1 and 2 are about three quarters of all
+// reaches and make the map hairy when zoomed out: order 2 from Mapbox zoom 9
+// (Leaflet 10), order 1 from Mapbox zoom 11 (Leaflet 12).
+//
+// Reaches are drawn only inside the selected HUC8, so the map stays readable
+// while looking for a watershed. The tiles carry no HUC code, and Mapbox's
+// `within` filter would drop every reach crossing the boundary (the outlet
+// reach among them), so the reaches canvas is instead clipped to the selected
+// polygon's outline, redone each time the plugin moves the canvas.
+const NWM_TILESET = 'byu-hydroinformatics.nwm-channels';
+const NWM_SOURCE_LAYER = 'channels';
+const NWM_COLOR = '#191970';
+const NWM_MIN_ZOOM = 7;
+map.createPane('nwmReachesPane');
+map.getPane('nwmReachesPane').style.zIndex = 450;
+map.getPane('nwmReachesPane').style.pointerEvents = 'none';
+
+const NWM_REACH_LAYER_IDS = [];
+function nwmReachLayer(id, filter, width, opacity, minZoom) {
+    NWM_REACH_LAYER_IDS.push(id);
+    return {
+        id: id, type: 'line', source: 'nwm', 'source-layer': NWM_SOURCE_LAYER,
+        minzoom: minZoom || NWM_MIN_ZOOM,
+        filter: filter,
+        // Hidden until a HUC8 is selected; hidden layers also fetch no tiles.
+        layout: { visibility: 'none' },
+        paint: { 'line-color': NWM_COLOR, 'line-width': width, 'line-opacity': opacity },
+    };
+}
+
+/** The selected HUC8's Leaflet polygon, set by selectFeature. */
+let nwmReachesHuc = null;
+
+const NwmReachesLayer = L.MapboxGL.extend({
+    onAdd: function (map) {
+        const firstAdd = !this._glMap;
+        L.MapboxGL.prototype.onAdd.call(this, map);
+        if (firstAdd) this._glMap.on('style.load', this.clipToHuc.bind(this));
+        this.clipToHuc();
+    },
+
+    _update: function (e) {
+        L.MapboxGL.prototype._update.call(this, e);
+        this.clipToHuc();
+    },
+
+    /** Show the reaches only inside nwmReachesHuc, or none without one. */
+    clipToHuc: function () {
+        const container = this.getContainer();
+        if (!this._map || !this._glMap || !container) return;
+        const visibility = nwmReachesHuc ? 'visible' : 'none';
+        try {
+            NWM_REACH_LAYER_IDS.forEach(function (id) {
+                this._glMap.setLayoutProperty(id, 'visibility', visibility);
+            }, this);
+        } catch (e) {
+            // style still loading; its style.load event comes back here
+        }
+        if (!nwmReachesHuc) {
+            container.style.clipPath = '';
+            return;
+        }
+        // The outline in the canvas's own pixels: layer points, less the
+        // canvas container's offset. Multipolygons and holes are just more
+        // rings; evenodd leaves the holes out.
+        const map = this._map;
+        const origin = L.DomUtil.getPosition(container);
+        let path = '';
+        (function addRings(latlngs) {
+            if (latlngs.length && latlngs[0] instanceof L.LatLng) {
+                path += latlngs.map(function (latlng, i) {
+                    const p = map.latLngToLayerPoint(latlng).subtract(origin);
+                    return (i ? 'L' : 'M') + p.x.toFixed(1) + ' ' + p.y.toFixed(1);
+                }).join('') + 'Z';
+            } else {
+                latlngs.forEach(addRings);
+            }
+        })(nwmReachesHuc.getLatLngs());
+        container.style.clipPath = `path(evenodd, "${path}")`;
+    },
+});
+
+function showNwmReachesIn(hucLayer) {
+    nwmReachesHuc = hucLayer;
+    const reaches = OVERLAYS['NWM reaches'];
+    if (reaches) reaches.clipToHuc();
+}
+
+const OVERLAYS = !MAPBOX_TOKEN ? {} : {
+    'NWM reaches': mapboxLayer({
+        pane: 'nwmReachesPane',
+        attribution: 'River reaches: NOAA National Water Model',
+        style: {
+            version: 8,
+            sources: { nwm: { type: 'vector', url: `mapbox://${NWM_TILESET}` } },
+            layers: [
+                nwmReachLayer('nwm-order1', ['<=', ['get', 'streamOrder'], 1], 1.0, 0.8, 11),
+                nwmReachLayer('nwm-order2', ['==', ['get', 'streamOrder'], 2], 1.0, 0.8, 9),
+                nwmReachLayer('nwm-md', ['all', ['>=', ['get', 'streamOrder'], 3], ['<=', ['get', 'streamOrder'], 4]], 2.0, 0.8),
+                nwmReachLayer('nwm-lg', ['>=', ['get', 'streamOrder'], 5], 3.5, 0.9),
+            ],
+        },
+    }, NwmReachesLayer),
 };
 
-/** The chosen basemap is remembered per browser, like the sidebar mode. */
+/** The chosen basemap and overlays are remembered per browser, like the sidebar mode. */
 const BASEMAP_KEY = 'fimserve_viewer.basemap';
+const OVERLAYS_OFF_KEY = 'fimserve_viewer.overlaysOff';
 (function addBasemaps() {
-    let name = 'Streets';
+    let name = MAPBOX_TOKEN ? 'Mapbox' : 'Streets';
+    let overlaysOff = [];
     try {
         const saved = localStorage.getItem(BASEMAP_KEY);
         if (saved && Object.prototype.hasOwnProperty.call(BASEMAPS, saved)) name = saved;
+        overlaysOff = JSON.parse(localStorage.getItem(OVERLAYS_OFF_KEY) || '[]');
     } catch (e) {
-        // storage blocked (private window, previews): start on the default
+        // storage blocked (private window, previews): start on the defaults
     }
     BASEMAPS[name].addTo(map);
-    L.control.layers(BASEMAPS, null, { position: 'topleft' }).addTo(map);
+    Object.keys(OVERLAYS).forEach(function (overlay) {
+        if (!overlaysOff.includes(overlay)) OVERLAYS[overlay].addTo(map);
+    });
+    L.control.layers(BASEMAPS, OVERLAYS, { position: 'topleft' }).addTo(map);
     map.on('baselayerchange', function (e) {
         try {
             localStorage.setItem(BASEMAP_KEY, e.name);
         } catch (err) {
             // not remembered; the switch itself still happened
+        }
+    });
+    map.on('overlayadd overlayremove', function () {
+        const off = Object.keys(OVERLAYS).filter(function (overlay) {
+            return !map.hasLayer(OVERLAYS[overlay]);
+        });
+        try {
+            localStorage.setItem(OVERLAYS_OFF_KEY, JSON.stringify(off));
+        } catch (err) {
+            // not remembered; the toggle itself still happened
         }
     });
 })();
@@ -569,6 +742,7 @@ function selectFeature(layer) {
     selectedLayer = layer;
     layer.setStyle(selectedStyle);
     layer.bringToFront();
+    showNwmReachesIn(layer);
 }
 
 // Function to handle click

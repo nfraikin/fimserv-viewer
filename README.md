@@ -362,6 +362,29 @@ Then follow Step 8 from the macOS section above to generate your first flood map
 
 ---
 
+## API keys (optional)
+
+Some features need a key. Keys never go in the code (GitHub rejects a push
+that contains one); they go in a small text file outside the repo, which the
+app reads when it runs:
+
+- macOS / Linux: `~/.fimserve_viewer/keys.env`
+- Windows: `C:\Users\<you>\.fimserve_viewer\keys.env`
+
+One key per line, `NAME=value`, no spaces around `=`:
+
+```
+MAPBOX_TOKEN=pk....
+```
+
+| Key | What it turns on |
+|---|---|
+| `MAPBOX_TOKEN` | The Mapbox basemap and the NWM river reaches inside the selected watershed. Without it the map starts on Streets, with no reaches. |
+
+On macOS / Linux, make the file readable only by you: `chmod 600 ~/.fimserve_viewer/keys.env`.
+An environment variable of the same name works too, and wins over the file. To
+keep the file somewhere else, set `FIMSERVE_VIEWER_KEYS` to its path.
+
 ## Git LFS (for contributors)
 
 This repo ships a 57 MB watershed-boundaries file

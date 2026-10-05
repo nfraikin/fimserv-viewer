@@ -27,7 +27,7 @@ from django.http import (
 from django.views.decorators.csrf import csrf_exempt
 from tethys_sdk.routing import controller
 
-from . import fim_logic, forecast
+from . import fim_logic, forecast, local_keys
 from .app import App
 from .results import (
     custom_download_name,
@@ -108,8 +108,14 @@ def home(request):
 
     Tethys' App.render() prepends the app package name automatically — pass
     'home.html', NOT 'fimserve_viewer/home.html'.
+
+    The Mapbox token comes from the keys file (see ``local_keys``), not the
+    code. It is a public token, made for the browser; without one the page
+    leaves out the Mapbox basemap and NWM reaches.
     """
-    return App.render(request, "home.html", {})
+    return App.render(
+        request, "home.html", {"mapbox_token": local_keys.get("MAPBOX_TOKEN") or ""}
+    )
 
 
 # =============================================================================
