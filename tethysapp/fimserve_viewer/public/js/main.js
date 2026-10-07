@@ -172,6 +172,33 @@ function showNwmReachesIn(hucLayer) {
     if (reaches) reaches.clipToHuc();
 }
 
+/** The NWM reach drawn at a map container point, as {featureId, order}, or
+ *  null. Only drawn reaches count, so a stream order hidden at this zoom can't
+ *  be clicked. Where a tributary meets a bigger river, the bigger river wins. */
+function nwmReachAt(containerPoint) {
+    const layer = OVERLAYS['NWM reaches'];
+    const gl = map.hasLayer(layer) && layer.getMapboxMap();
+    if (!gl || !nwmReachesHuc) return null;
+    // The Mapbox canvas sits where the plugin last placed it, not always at the
+    // map's corner, so convert to the canvas's own pixels.
+    const origin = map.layerPointToContainerPoint(L.DomUtil.getPosition(layer.getContainer()));
+    const p = containerPoint.subtract(origin);
+    const slack = 4;   // px either side: the lines are only 1 to 3.5 px wide
+    let features;
+    try {
+        features = gl.queryRenderedFeatures(
+            [[p.x - slack, p.y - slack], [p.x + slack, p.y + slack]],
+            { layers: NWM_REACH_LAYER_IDS });
+    } catch (e) {
+        return null;   // style still loading
+    }
+    if (!features.length) return null;
+    const best = features.reduce(function (a, b) {
+        return b.properties.streamOrder > a.properties.streamOrder ? b : a;
+    });
+    return { featureId: Number(best.properties.station_id), order: best.properties.streamOrder };
+}
+
 const OVERLAYS = !MAPBOX_TOKEN ? {} : {
     'NWM reaches': mapboxLayer({
         pane: 'nwmReachesPane',
@@ -245,6 +272,10 @@ if (!map.getPane('hydroOutletPane')) {
        the discharge labels (820) so it never hides a number. */
     map.getPane('hydroOutletPane').style.zIndex = 700;
 }
+/* Popups above every pane here: Leaflet's default (700) ties with the outlet
+   and reach markers, which then drew over an open popup, and the discharge
+   labels (820) sat above it outright. */
+map.getPane('popupPane').style.zIndex = 900;
 
 /**
  * Solve 8×8 linear system (partial pivot). Returns null if singular.
@@ -743,19 +774,27 @@ function selectFeature(layer) {
     layer.setStyle(selectedStyle);
     layer.bringToFront();
     showNwmReachesIn(layer);
+    clearReachMarkers();
 }
 
 // Function to handle click
 function onEachFeature(feature, layer) {
-    // Add popup
-    layer.bindPopup(createPopupContent(feature.properties));
-    
-    // Add hover and click effects
+    // Add hover and click effects. The popup is opened here rather than bound
+    // with bindPopup, so a click on an NWM reach inside the selected watershed
+    // can open the reach's popup instead of the watershed's.
     layer.on({
         mouseover: highlightFeature,
         mouseout: resetHighlight,
         click: function(e) {
             L.DomEvent.stopPropagation(e);
+            if (e.target === selectedLayer) {
+                const reach = nwmReachAt(e.containerPoint);
+                if (reach) {
+                    showReach(reach, e.latlng);
+                    return;
+                }
+            }
+            L.popup().setLatLng(e.latlng).setContent(createPopupContent(feature.properties)).openOn(map);
             selectFeature(e.target);
             window._lastClickedHUC8 = feature.properties;
             displayHUC8Details(feature.properties);
@@ -1683,6 +1722,168 @@ async function loadHydrograph(huc8) {
     } finally {
         if (btn && mySeq === ctx.seq) { btn.disabled = false; btn.textContent = 'Show hydrograph'; }
     }
+}
+
+// -----------------------------------------------------------------------------
+// Clicked NWM reaches (see nwmReachAt). Each gets its own marker, a purple
+// diamond apart from the orange outlet circle, and a popup with the reach's ID,
+// NWPS name, stream order and hydrograph. The hydrograph is for whatever the
+// sidebar is set to (the retrospective date, time and span, or the forecast
+// cycle) and marks that hour. It is a picture only: the outlet hydrograph in
+// the sidebar is untouched and stays the one that sets the date and time.
+// Markers stay until another watershed is selected, so reaches can be compared.
+// -----------------------------------------------------------------------------
+/** featureId -> {featureId, order, latlng, name, hydro, marker}. `name` is
+ *  undefined while it is looked up, '' for an unnamed reach, and null when
+ *  NWPS couldn't say. */
+const reachMarkers = new Map();
+
+function showReach(hit, latlng) {
+    const existing = reachMarkers.get(hit.featureId);
+    if (existing) {
+        existing.marker.openPopup();
+        return;
+    }
+    const reach = { featureId: hit.featureId, order: hit.order, latlng: latlng, name: undefined, hydro: null };
+    reach.marker = L.marker(latlng, {
+        pane: 'hydroOutletPane',
+        icon: L.divIcon({ className: 'reach-marker', html: '<span></span>', iconSize: [14, 14], popupAnchor: [0, -8] }),
+        title: 'NWM reach ' + hit.featureId,
+    }).bindPopup('', { minWidth: 300, maxWidth: 340, className: 'reach-popup' }).addTo(map);
+    // Redrawn on every open, so a reopened popup follows the current units.
+    reach.marker.on('popupopen', function () { refreshReachPopup(reach); });
+    reachMarkers.set(reach.featureId, reach);
+    reach.marker.openPopup();
+    loadReachName(reach);
+    loadReachHydrograph(reach);
+}
+
+function removeReachMarker(featureId) {
+    const reach = reachMarkers.get(featureId);
+    if (!reach) return;
+    map.removeLayer(reach.marker);
+    reachMarkers.delete(featureId);
+}
+
+function clearReachMarkers() {
+    Array.from(reachMarkers.keys()).forEach(removeReachMarker);
+}
+
+function refreshReachPopup(reach) {
+    if (reach.marker.isPopupOpen()) reach.marker.setPopupContent(reachPopupHtml(reach));
+}
+
+function reachPopupHtml(reach) {
+    const name = reach.name === undefined ? '<em>looking up…</em>'
+        : reach.name ? escapeHtml(reach.name)
+        : '<em>' + (reach.name === '' ? 'unnamed' : 'unavailable') + '</em>';
+    const h = reach.hydro;
+    const plot = !h || h.status === 'loading'
+        ? '<p class="hydrograph-note">' + escapeHtml(h ? h.message : 'Fetching NWM streamflow…') + '</p>'
+        : h.status === 'error'
+            ? '<p class="hydrograph-note hydrograph-error">' + escapeHtml(h.message) + '</p>'
+            : reachHydrographHtml(reach);
+    const id = escapeHtml(String(reach.featureId));
+    return '<div class="popup-title">NWM reach ' + id + '</div>'
+        + '<div class="popup-info"><strong>Name:</strong> ' + name + '</div>'
+        + '<div class="popup-info"><strong>Stream order:</strong> ' + escapeHtml(String(reach.order)) + '</div>'
+        + plot
+        + '<button type="button" class="reach-popup-remove" onclick="removeReachMarker(' + id + ')">Remove marker</button>';
+}
+
+function reachHydrographHtml(reach) {
+    const h = reach.hydro;
+    const n = h.times.length;
+    if (n < 2) return '<p class="hydrograph-note">Not enough data to plot a series.</p>';
+    let first = 0;
+    if (h.forecast) {
+        first = h.times.findIndex(function (t) { return !isForecastHourStale(t); });
+        if (first < 0) first = n;
+    }
+    const ctx = {
+        data: { times: h.times, values: h.values },
+        svgId: 'reach-hydrograph-' + reach.featureId,
+        markSamples: h.forecast,
+        firstSelectable: function () { return first; },
+    };
+    const selIdx = hydroClampIndex(ctx, hydroIndexForTime(h.times, h.selTime));
+    // A picture, not the sidebar's slider: nothing here to focus or step through.
+    const svg = buildHydrographSvg(ctx, selIdx).replace(' tabindex="0" role="slider"', ' role="img"');
+    return '<div class="hydrograph-panel">' + svg + '<p class="hydrograph-note">' + h.caption + '</p></div>';
+}
+
+async function loadReachName(reach) {
+    let name = null;
+    try {
+        const r = await fetch('./api/reach-name/' + encodeURIComponent(reach.featureId) + '/');
+        if (r.ok) name = (await r.json()).name;
+    } catch (e) {
+        // the name stays "unavailable"; the ID is enough to go on
+    }
+    reach.name = name;
+    refreshReachPopup(reach);
+}
+
+async function loadReachHydrograph(reach) {
+    const huc8 = lastSidebarHuc8;
+    const forecast = sidebarMode === 'forecast';
+    const id = encodeURIComponent(reach.featureId);
+    const days = hydroWindowDays;
+    let url, selTime = null;
+    if (forecast) {
+        const cycle = hydroForecast.cycleToken || (forecastState.options && forecastState.options.cycle_token);
+        if (!cycle) {
+            reach.hydro = { status: 'error', message: 'Forecast hours are still loading. Remove the marker and click the reach again in a moment.' };
+            refreshReachPopup(reach);
+            return;
+        }
+        url = './api/forecast/hydrograph/' + encodeURIComponent(huc8) + '/' + encodeURIComponent(cycle) + '/?reach=' + id;
+        const sel = selectedForecastHour();
+        if (sel && sel.cycle_token === cycle) selTime = sel.valid_time;
+        reach.hydro = { status: 'loading', message: 'Fetching the 18 forecast hours from NOAA, about 20 seconds.' };
+    } else {
+        // The watershed's own date and time; a watershed without FIM coverage
+        // has no date input, so it falls back to the same default date.
+        const dateInput = document.getElementById('flood-date-input');
+        const timeInput = document.getElementById('flood-time-input');
+        const date = (dateInput && dateInput.value) || NWM_MAX_DATE;
+        const time = (timeInput && timeInput.value) || '00:00:00';
+        url = './api/get-hydrograph/' + encodeURIComponent(huc8) + '/'
+            + encodeURIComponent(date + '-' + time.replace(/:/g, '-')) + '/?days=' + encodeURIComponent(days)
+            + '&reach=' + id;
+        reach.hydro = { status: 'loading', message: 'Fetching NWM streamflow, about 20 seconds.' };
+    }
+    refreshReachPopup(reach);
+    try {
+        const r = await fetch(url);
+        const data = await r.json();
+        if (!r.ok || data.status !== 'success' || !data.times || !data.times.length) {
+            throw new Error(data.message || 'No streamflow data for this reach.');
+        }
+        // An hour with no value comes back null; leave it out of the line.
+        const times = [], values = [];
+        data.times.forEach(function (t, i) {
+            if (data.values[i] != null) { times.push(t); values.push(data.values[i]); }
+        });
+        let caption;
+        if (forecast) {
+            caption = 'Forecast discharge for the ' + escapeHtml(formatUtcHour(data.cycle_time)) + ' cycle. Shaded hours have passed.'
+                + (selTime ? ' The marked hour is the forecast hour chosen in the sidebar.' : '');
+        } else {
+            // The API echoes the moment as "YYYY-MM-DD HH:MM:SS"; the series is ISO.
+            selTime = String(data.datetime).replace(' ', 'T');
+            const span = data.window_days || days;   // the server's clamped span
+            caption = 'Discharge, ' + escapeHtml(String(times[0]).slice(0, 10)) + ' to '
+                + escapeHtml(String(times[times.length - 1]).slice(0, 10))
+                + ' (±' + span + (span === 1 ? ' day' : ' days')
+                + (data.clipped ? ', trimmed where the NWM retrospective record ends' : '')
+                + '). The marked hour is the watershed\'s date and time.';
+        }
+        reach.hydro = { status: 'ok', times: times, values: values, selTime: selTime, forecast: forecast, caption: caption };
+    } catch (e) {
+        reach.hydro = { status: 'error', message: 'Could not load the hydrograph: ' + e.message };
+    }
+    refreshReachPopup(reach);
 }
 
 function clearFloodLayer() {

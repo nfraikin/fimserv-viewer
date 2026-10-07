@@ -315,27 +315,38 @@ _hydrograph_cache: "OrderedDict[tuple, dict]" = OrderedDict()
 _hydrograph_lock = threading.Lock()
 
 
-def build_hydrograph_payload(huc8: str, cycle_token: str) -> dict:
+def build_hydrograph_payload(huc8: str, cycle_token: str, reach=None) -> dict:
     """Forecast hydrograph for a HUC8 and cycle, as the retrospective one's shape.
 
     Like the retrospective one, the series is the HUC's outlet reach
     (``feature_id``; see ``fim_logic.outlet_feature_id``), and ``outlet`` is
-    that reach as GeoJSON for the map. A cycle never
+    that reach as GeoJSON for the map. ``reach`` plots that NWM reach instead,
+    one clicked on the map, with ``outlet`` None. A cycle never
     changes once complete, so the series is cached in memory per (HUC8,
-    cycle); only the first view of each pays for the downloads.
+    cycle, reach); only the first view of each pays for the downloads.
     """
     cycle = parse_token(cycle_token)
-    cache_key = (huc8, cycle_token)
+    reach = None if reach is None else int(reach)
+    cache_key = (huc8, cycle_token, reach)
     with _hydrograph_lock:
         cached = _hydrograph_cache.get(cache_key)
         if cached is not None:
             _hydrograph_cache.move_to_end(cache_key)
     if cached is None:
-        outlet = fim_logic.outlet_feature_id(huc8, feature_ids_for_huc(huc8))
-        times, values = fetch_series(cycle, outlet)
+        if reach is None:
+            feature_id = fim_logic.outlet_feature_id(huc8, feature_ids_for_huc(huc8))
+            outlet = fim_logic.outlet_reach_feature(huc8, feature_id)
+        else:
+            feature_id, outlet = reach, None
+        times, values = fetch_series(cycle, feature_id)
+        if reach is not None and all(v is None for v in values):
+            raise FileNotFoundError(
+                f"No NWM forecast for reach {feature_id}. Reaches inside a "
+                "reservoir have none."
+            )
         cached = {
-            "feature_id": outlet,
-            "outlet": fim_logic.outlet_reach_feature(huc8, outlet),
+            "feature_id": feature_id,
+            "outlet": outlet,
             "times": times,
             "values": values,
         }

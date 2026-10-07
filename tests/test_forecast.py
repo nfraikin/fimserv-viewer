@@ -235,5 +235,42 @@ class NamingTests(unittest.TestCase):
         self.assertFalse(fnmatch.fnmatch(csv, "NWM_*_07070003.csv"))
 
 
+class ReachHydrographTests(unittest.TestCase):
+    """``reach``: the forecast for a reach clicked on the map."""
+
+    TOKEN = forecast.to_token(CYCLE)
+
+    def setUp(self):
+        forecast._hydrograph_cache.clear()
+        self.addCleanup(forecast._hydrograph_cache.clear)
+        self.fetched = []
+
+    def build(self, values, reach=None):
+        def fake_series(cycle, feature_id, fs=None):
+            self.fetched.append(feature_id)
+            return ["2026-09-29T15:00:00", "2026-09-29T16:00:00"], values
+
+        with mock.patch.object(forecast, "fetch_series", fake_series), \
+                mock.patch.object(forecast, "feature_ids_for_huc", lambda huc8: [202]), \
+                mock.patch.object(forecast.fim_logic, "outlet_feature_id", lambda huc8, ids: 202), \
+                mock.patch.object(forecast.fim_logic, "outlet_reach_feature", lambda huc8, fid: {"id": fid}):
+            return forecast.build_hydrograph_payload("07070003", self.TOKEN, reach=reach)
+
+    def test_clicked_reach_is_fetched_instead_of_the_outlet(self):
+        payload = self.build([1.0, 2.0], reach=101)
+        self.assertEqual((payload["feature_id"], payload["outlet"]), (101, None))
+        self.assertEqual(self.fetched, [101])
+
+    def test_reach_and_outlet_are_cached_apart(self):
+        self.build([1.0, 2.0])
+        payload = self.build([3.0, 4.0], reach=101)
+        self.assertEqual(payload["values"], [3.0, 4.0])
+        self.assertEqual(self.fetched, [202, 101])
+
+    def test_reach_with_no_forecast_says_so(self):
+        with self.assertRaisesRegex(FileNotFoundError, "reach 101.*reservoir"):
+            self.build([None, None], reach=101)
+
+
 if __name__ == "__main__":
     unittest.main()
