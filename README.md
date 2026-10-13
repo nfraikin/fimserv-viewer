@@ -375,11 +375,13 @@ One key per line, `NAME=value`, no spaces around `=`:
 
 ```
 MAPBOX_TOKEN=pk....
+CIROH_API_KEY=...
 ```
 
 | Key | What it turns on |
 |---|---|
 | `MAPBOX_TOKEN` | The Mapbox basemap and the NWM river reaches inside the selected watershed. Without it the map starts on Streets, with no reaches. |
+| `CIROH_API_KEY` | Return-period flows (2- to 100-year) drawn on the hydrographs, from the [CIROH NWM API](https://hub.ciroh.org/docs/products/data-management/bigquery-api/) (free for CIROH members; request a key there). Without it the hydrographs have no return-period lines. On a portal it can be the app's `ciroh_api_key` setting instead. |
 
 On macOS / Linux, make the file readable only by you: `chmod 600 ~/.fimserve_viewer/keys.env`.
 An environment variable of the same name works too, and wins over the file. To

@@ -625,6 +625,16 @@ img.flood-raster-crisp.leaflet-image-layer {
     color: #2c3e50;
 }
 
+.hydrograph-rp-ctl {
+    gap: 4px;
+    cursor: pointer;
+}
+
+.hydrograph-rp-ctl input {
+    margin: 0;
+    cursor: pointer;
+}
+
 /* Segmented control: the active unit is shown filled, so the current state is
    readable at a glance rather than inferred from a "switch to..." label. */
 .hydrograph-units {

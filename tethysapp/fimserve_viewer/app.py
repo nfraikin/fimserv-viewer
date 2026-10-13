@@ -1,4 +1,4 @@
-from tethys_sdk.app_settings import PersistentStoreDatabaseSetting
+from tethys_sdk.app_settings import PersistentStoreDatabaseSetting, SecretCustomSetting
 from tethys_sdk.base import TethysAppBase
 
 
@@ -16,6 +16,18 @@ class App(TethysAppBase):
     enable_feedback = False
     feedback_emails = []
     controller_modules = ['job_controllers']
+
+    def custom_settings(self):
+        """Declare optional secrets. The app runs without them."""
+        return (
+            SecretCustomSetting(
+                name='ciroh_api_key',
+                description='CIROH NWM API key, used to draw return-period flows on the '
+                            'hydrographs. Falls back to the CIROH_API_KEY environment variable, '
+                            'then ~/.fimserve_viewer/keys.env.',
+                required=False,
+            ),
+        )
 
     def persistent_store_settings(self):
         """Declare the database that stores background job records."""
