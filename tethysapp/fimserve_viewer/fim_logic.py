@@ -1,5 +1,5 @@
 """
-fim_logic.py - Pure helper functions for the FIMserve Viewer Tethys app.
+fim_logic.py - Pure helper functions for the FIMserv Viewer Tethys app.
 
 This module is the direct counterpart of helper code that used to live in the
 Flask `server.py`. Every function here is web-framework-agnostic; the

@@ -1,5 +1,5 @@
 """
-manage_cache.py - Hydrofabric disk-cache management for the FIMserve Viewer.
+manage_cache.py - Hydrofabric disk-cache management for the FIMserv Viewer.
 
 A first-time HUC8 download is ~700-900 MB, almost all of it hydrofabric
 internals (branches/, hydrotable.csv, ...) that are only needed while the

@@ -3,9 +3,9 @@ from tethys_sdk.base import TethysAppBase
 
 
 class App(TethysAppBase):
-    """Tethys app class for the FIMserve Viewer."""
+    """Tethys app class for the FIMserv Viewer."""
 
-    name = 'FIMserve Viewer'
+    name = 'FIMserv Viewer'
     description = 'HUC8 flood inundation viewer powered by FIMserv.'
     package = 'fimserve_viewer'  # WARNING: Do not change this value
     index = 'home'

@@ -1,4 +1,4 @@
-# FIMserve Viewer - Clean-environment runbook
+# FIMserv Viewer - Clean-environment runbook
 
 Use this checklist when installing from a **fresh git clone** on a machine that has
 never run the app before. It addresses the two most common first-install failures
