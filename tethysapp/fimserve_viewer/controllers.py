@@ -27,7 +27,7 @@ from django.http import (
 from django.views.decorators.csrf import csrf_exempt
 from tethys_sdk.routing import controller
 
-from . import fim_logic, forecast, local_keys, nwps
+from . import fim_logic, forecast, local_keys, nwps, return_periods
 from .app import App
 from .results import (
     custom_download_name,
@@ -678,6 +678,47 @@ def reach_name(request, feature_id):
     return JsonResponse(
         {"status": "success", "feature_id": int(feature_id), "name": nwps.reach_name(feature_id)}
     )
+
+
+# =============================================================================
+# /api/return-periods/{feature_id}
+# =============================================================================
+def ciroh_api_key_setting():
+    """The app's ciroh_api_key setting, or None when unset or not yet synced."""
+    try:
+        return App.get_custom_setting("ciroh_api_key")
+    except Exception:
+        return None
+
+
+@controller(url="api/return-periods/{feature_id}")
+@csrf_exempt
+def get_return_periods(request, feature_id):
+    """NWM 2- to 100-year return-period flows (m³/s) for one reach, via CIROH.
+
+    The hydrographs draw these as reference lines. Proxied so the CIROH API
+    key stays on the server.
+    """
+    if not str(feature_id).isdigit():
+        return JsonResponse(
+            {"status": "error", "message": "feature_id must be a number"}, status=400
+        )
+    try:
+        key = return_periods.api_key(ciroh_api_key_setting())
+        periods = return_periods.get_return_periods(feature_id, key)
+        return JsonResponse(
+            {"status": "success", "feature_id": int(feature_id), "return_periods": periods}
+        )
+    except return_periods.NotConfigured as exc:
+        return JsonResponse({"status": "error", "message": str(exc)}, status=503)
+    except LookupError as exc:
+        return JsonResponse({"status": "error", "message": str(exc)}, status=404)
+    except Exception as exc:
+        traceback.print_exc()
+        return JsonResponse(
+            {"status": "error", "message": f"Could not reach the CIROH NWM API: {exc}"},
+            status=502,
+        )
 
 
 @controller(url="api/flood-map-preview/forecast/{huc8}/{cycle_token}/{valid_token}")

@@ -588,6 +588,9 @@ function displayHUC8Details(properties) {
                         <option value="30"${hydroWindowDays === 30 ? ' selected' : ''}>&plusmn; 30 days</option>
                     </select>
                 </label>
+                <label class="hydrograph-ctl hydrograph-rp-ctl" title="Draw this reach's NWM 2- to 100-year return-period flows and scale the plot to show them">
+                    <input type="checkbox" class="hydrograph-rp-toggle"${hydroShowReturnPeriods ? ' checked' : ''} onchange="setHydrographReturnPeriods(this.checked)"> Return periods
+                </label>
                 <div class="hydrograph-units" role="group" aria-label="Discharge units">
                     <button type="button" id="hydro-unit-m3s" data-unit="m3s" class="hydrograph-unit-btn${showFloodDischargeInFt3s ? '' : ' is-active'}" onclick="setHydrographUnits(false)">m&sup3;/s</button>
                     <button type="button" id="hydro-unit-cfs" data-unit="cfs" class="hydrograph-unit-btn${showFloodDischargeInFt3s ? ' is-active' : ''}" onclick="setHydrographUnits(true)">ft&sup3;/s</button>
@@ -1257,6 +1260,19 @@ const HYDRO_PLOT_H = HYDRO_H - HYDRO_PAD - HYDRO_PAD_B;
  *  reads as a preference rather than a per-click setting. */
 let hydroWindowDays = 14;
 
+/** Draw the reach's NWM return-period flows (CIROH) and rescale to fit them.
+ *  Off by default: the 100-year line usually dwarfs the series, so the data-fit
+ *  scale is the better everyday view. Shared by both panels and persists across
+ *  watersheds, like the span. */
+let hydroShowReturnPeriods = false;
+
+/** Return periods per NWM reach: {status: 'loading'|'ok'|'error', periods, message}.
+ *  Kept across watersheds; a reach's return periods never change. */
+const hydroReturnPeriods = {};
+
+/** Amber (2-year) to deep red (100-year), as in the flood-warning notebook. */
+const HYDRO_RP_COLORS = ['#fdb04b', '#fd8d3c', '#fc5b2e', '#e8301f', '#c8141f', '#a10026'];
+
 /* Per-panel state. `data` is the plotted {times, values} (values in m³/s), or null.
  * `selTime` is the selected moment as an ISO string: the TIMESTAMP is the source of
  * truth, not its array index — index 32 is a different hour in a 49-point series
@@ -1301,6 +1317,55 @@ function setHydrographUnits(useCfs) {
     reapplyFloodQLabelMarkersFromCache();
     syncHydrographUnitButtons();
     rerenderHydrographs();
+}
+
+/** Both panels carry the checkbox; keep them in step. Redraw only — the
+ *  series doesn't change, and return periods are fetched on first render. */
+function setHydrographReturnPeriods(on) {
+    hydroShowReturnPeriods = !!on;
+    document.querySelectorAll('.hydrograph-rp-toggle').forEach(function (cb) {
+        cb.checked = hydroShowReturnPeriods;
+    });
+    rerenderHydrographs();
+}
+
+/** Fetch a reach's return periods once, then redraw whichever panels plot it. */
+async function ensureHydroReturnPeriods(featureId) {
+    const key = String(featureId);
+    if (hydroReturnPeriods[key]) return;
+    hydroReturnPeriods[key] = { status: 'loading' };
+    let entry;
+    try {
+        const r = await fetch('./api/return-periods/' + encodeURIComponent(key) + '/');
+        const data = await r.json();
+        entry = (r.ok && data.status === 'success' && data.return_periods && data.return_periods.length)
+            ? { status: 'ok', periods: data.return_periods }
+            : { status: 'error', message: data.message || 'No return periods for this reach.' };
+    } catch (e) {
+        entry = { status: 'error', message: e.message };
+    }
+    hydroReturnPeriods[key] = entry;
+    rerenderHydrographs();
+}
+
+/** The return periods to draw on a panel, or null (toggle off, not loaded, failed). */
+function hydroPanelReturnPeriods(ctx) {
+    if (!hydroShowReturnPeriods || !ctx.data || ctx.data.featureId == null) return null;
+    const entry = hydroReturnPeriods[String(ctx.data.featureId)];
+    return entry && entry.status === 'ok' ? entry.periods : null;
+}
+
+/** One sentence on the return-period lines for the panel's note; '' when off. */
+function hydroReturnPeriodNote(ctx) {
+    if (!hydroShowReturnPeriods) return '';
+    const fid = ctx.data && ctx.data.featureId;
+    if (fid == null) return ' Return periods need a reach ID, which this series lacks.';
+    const entry = hydroReturnPeriods[String(fid)];
+    if (!entry || entry.status === 'loading') return ' Loading return periods from the CIROH NWM API…';
+    if (entry.status === 'error') {
+        return ' <span class="hydrograph-error">Return periods unavailable: ' + escapeHtml(entry.message) + '</span>';
+    }
+    return ' Lines mark the NWM 2- to 100-year return-period flows for this reach (CIROH NWM API).';
 }
 
 /** Changing the span needs a new fetch — the window is applied server-side. */
@@ -1425,6 +1490,26 @@ function buildHydrographSvg(ctx, selIdx) {
     const baseY = HYDRO_PAD + HYDRO_PLOT_H;
     const unit = hydroUnitLabel();
 
+    // With return periods on, the axis runs from zero to just above the highest
+    // line, so the series reads against the flood thresholds at true proportion.
+    // Off, it stays fitted to the data alone (see hydroScaleY).
+    const periods = hydroPanelReturnPeriods(ctx);
+    let rpLines = '';
+    if (periods) {
+        const rpMax = Math.max.apply(null, periods.map(function (rp) { return hydroDisplayValue(rp.value); }));
+        min = Math.min(0, min);
+        max = Math.max(max, rpMax) * 1.08;
+        periods.forEach(function (rp, k) {
+            const color = HYDRO_RP_COLORS[Math.round(k * (HYDRO_RP_COLORS.length - 1) / Math.max(periods.length - 1, 1))];
+            const y = hydroScaleY(hydroDisplayValue(rp.value), min, max).toFixed(1);
+            // Labels sit in the right margin, clear of the selection readout.
+            rpLines += '<line x1="' + HYDRO_PAD + '" y1="' + y + '" x2="' + (HYDRO_PAD + HYDRO_PLOT_W) + '" y2="' + y
+                    +  '" stroke="' + color + '" stroke-width="1.2"/>'
+                    +  '<text x="' + (HYDRO_PAD + HYDRO_PLOT_W + 3) + '" y="' + (Number(y) + 3) + '" font-size="8" fill="' + color + '">'
+                    +  escapeHtml(rp.years + '-yr') + '</text>';
+        });
+    }
+
     let pts = '';
     for (let i = 0; i < n; i++) {
         pts += hydroScaleX(i, n).toFixed(1) + ',' + hydroScaleY(values[i], min, max).toFixed(1) + ' ';
@@ -1468,6 +1553,8 @@ function buildHydrographSvg(ctx, selIdx) {
     const split = hydroSplitTimestamp(times[selIdx]);
     const anchor = mx > HYDRO_W * 0.6 ? 'end' : 'start';
     const labelX = (anchor === 'end' ? mx - 6 : mx + 6).toFixed(1);
+    // Return-period lines can run through the readout; a white halo keeps it legible.
+    const readoutHalo = rpLines ? ' stroke="#fff" stroke-width="3" paint-order="stroke"' : '';
 
     return '<svg id="' + ctx.svgId + '" viewBox="0 0 ' + HYDRO_W + ' ' + HYDRO_H + '"'
         + ' tabindex="0" role="slider" aria-label="Selected hour on the discharge time series"'
@@ -1477,12 +1564,13 @@ function buildHydrographSvg(ctx, selIdx) {
         + ticks
         + '<line x1="' + HYDRO_PAD + '" y1="' + baseY + '" x2="' + (HYDRO_PAD + HYDRO_PLOT_W) + '" y2="' + baseY + '" stroke="#ccc"/>'
         + '<line x1="' + HYDRO_PAD + '" y1="' + HYDRO_PAD + '" x2="' + HYDRO_PAD + '" y2="' + baseY + '" stroke="#ccc"/>'
+        + rpLines
         + '<polyline points="' + pts.trim() + '" fill="none" stroke="#2980b9" stroke-width="2"/>'
         + dots
         + '<line x1="' + mx.toFixed(1) + '" y1="' + HYDRO_PAD + '" x2="' + mx.toFixed(1) + '" y2="' + baseY + '" stroke="#e67e22" stroke-width="1" stroke-dasharray="3 2"/>'
         + '<circle cx="' + mx.toFixed(1) + '" cy="' + my.toFixed(1) + '" r="4" fill="#e67e22" stroke="#fff" stroke-width="1.5"/>'
-        + '<text x="' + labelX + '" y="' + (HYDRO_PAD + 11) + '" font-size="10" fill="#e67e22" text-anchor="' + anchor + '">' + escapeHtml(split[0] + ' ' + split[1]) + '</text>'
-        + '<text x="' + labelX + '" y="' + (HYDRO_PAD + 23) + '" font-size="10" fill="#e67e22" text-anchor="' + anchor + '">' + escapeHtml(values[selIdx].toFixed(2) + ' ' + unit) + '</text>'
+        + '<text x="' + labelX + '" y="' + (HYDRO_PAD + 11) + '" font-size="10" fill="#e67e22" text-anchor="' + anchor + '"' + readoutHalo + '>' + escapeHtml(split[0] + ' ' + split[1]) + '</text>'
+        + '<text x="' + labelX + '" y="' + (HYDRO_PAD + 23) + '" font-size="10" fill="#e67e22" text-anchor="' + anchor + '"' + readoutHalo + '>' + escapeHtml(values[selIdx].toFixed(2) + ' ' + unit) + '</text>'
         + '<text x="' + (HYDRO_PAD - 4) + '" y="' + (HYDRO_PAD + 3) + '" font-size="9" fill="#666" text-anchor="end">' + escapeHtml(max.toFixed(2)) + '</text>'
         + '<text x="' + (HYDRO_PAD - 4) + '" y="' + (baseY + 3) + '" font-size="9" fill="#666" text-anchor="end">' + escapeHtml(min.toFixed(2)) + '</text>'
         + '<text x="2" y="' + (HYDRO_PAD - 10) + '" font-size="9" fill="#888">' + unit + '</text>'
@@ -1581,13 +1669,14 @@ function renderHydrograph(ctx) {
     const times = ctx.data.times;
     const selIdx = hydroClampIndex(ctx, hydroIndexForTime(times, ctx.selTime));
     ctx.selTime = times[selIdx];
+    if (hydroShowReturnPeriods && ctx.data.featureId != null) ensureHydroReturnPeriods(ctx.data.featureId);
 
     // Redrawing replaces the SVG node, so focus would be lost on every keypress.
     const prevSvg = document.getElementById(ctx.svgId);
     const hadFocus = !!prevSvg && document.activeElement === prevSvg;
 
     panel.innerHTML = buildHydrographSvg(ctx, selIdx)
-        + '<p class="hydrograph-note">' + ctx.note(times) + '</p>';
+        + '<p class="hydrograph-note">' + ctx.note(times) + hydroReturnPeriodNote(ctx) + '</p>';
 
     const svg = document.getElementById(ctx.svgId);
     if (!svg) return;
@@ -2361,6 +2450,9 @@ function forecastHydrographSectionHtml(huc8) {
             <h3>Forecast Hydrograph</h3>
             <div class="hydrograph-controls">
                 <span class="hydrograph-ctl">18 hourly forecast values, UTC</span>
+                <label class="hydrograph-ctl hydrograph-rp-ctl" title="Draw this reach's NWM 2- to 100-year return-period flows and scale the plot to show them">
+                    <input type="checkbox" class="hydrograph-rp-toggle"${hydroShowReturnPeriods ? ' checked' : ''} onchange="setHydrographReturnPeriods(this.checked)"> Return periods
+                </label>
                 <div class="hydrograph-units" role="group" aria-label="Discharge units">
                     <button type="button" data-unit="m3s" class="hydrograph-unit-btn${showFloodDischargeInFt3s ? '' : ' is-active'}" onclick="setHydrographUnits(false)">m&sup3;/s</button>
                     <button type="button" data-unit="cfs" class="hydrograph-unit-btn${showFloodDischargeInFt3s ? ' is-active' : ''}" onclick="setHydrographUnits(true)">ft&sup3;/s</button>
