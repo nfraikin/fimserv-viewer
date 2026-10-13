@@ -8,8 +8,9 @@
 
 {% block content_dependent_styles %}
   {{ block.super }}
-  {# base.html already loads our public/css/main.css - only Leaflet CSS here. #}
+  {# base.html already loads our public/css/main.css - only map library CSS here. #}
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+  <link rel="stylesheet" href="https://api.mapbox.com/mapbox-gl-js/v3.7.0/mapbox-gl.css">
   <style>
     /* Hide Tethys's default blue "app-actions" strip at the bottom of the
        app content area. We don't render any action buttons there, so the
@@ -105,10 +106,14 @@
       byuLogo:         "{% static 'fimserve_viewer/images/byu_logo.png' %}",
       cirohLogo:       "{% static 'fimserve_viewer/images/ciroh.jpeg' %}",
       tgfLogo:         "{% static 'fimserve_viewer/images/TGF-Logo.png' %}",
-      huc8GeoJsonUrl:  "./api/all-huc8-geojson/"
+      huc8GeoJsonUrl:  "./api/all-huc8-geojson/",
+      {# From ~/.fimserve_viewer/keys.env on the server, never the repo. #}
+      mapboxToken:     "{{ mapbox_token|escapejs }}"
     };
   </script>
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="https://api.mapbox.com/mapbox-gl-js/v3.7.0/mapbox-gl.js"></script>
+  <script src="https://unpkg.com/mapbox-gl-leaflet@0.0.16/leaflet-mapbox-gl.js"></script>
   <script src="https://unpkg.com/topojson-client@3.1.0/dist/topojson-client.min.js"></script>
   {{ block.super }}
 {% endblock %}

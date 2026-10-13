@@ -27,7 +27,7 @@ from django.http import (
 from django.views.decorators.csrf import csrf_exempt
 from tethys_sdk.routing import controller
 
-from . import fim_logic, forecast
+from . import fim_logic, forecast, local_keys, nwps
 from .app import App
 from .results import (
     custom_download_name,
@@ -108,8 +108,14 @@ def home(request):
 
     Tethys' App.render() prepends the app package name automatically — pass
     'home.html', NOT 'fimserve_viewer/home.html'.
+
+    The Mapbox token comes from the keys file (see ``local_keys``), not the
+    code. It is a public token, made for the browser; without one the page
+    leaves out the Mapbox basemap and NWM reaches.
     """
-    return App.render(request, "home.html", {})
+    return App.render(
+        request, "home.html", {"mapbox_token": local_keys.get("MAPBOX_TOKEN") or ""}
+    )
 
 
 # =============================================================================
@@ -533,14 +539,16 @@ def get_hydrograph(request, huc8, date_str):
     ``build_hydrograph_payload`` clamps it to a sane range. Defaults to 14:
     per #40, narrower windows (even ±7 on one watershed) can clip the real
     peak at the window edge, and the fetch cost barely rises with span width.
+    Optional ``?reach=ID`` plots that NWM reach instead of the outlet.
     """
     try:
         try:
             window_days = int(request.GET.get("days", 14))
         except (TypeError, ValueError):
             window_days = 14
+        validate_huc8(huc8)  # names the directory a reach's data is kept in
         payload = fim_logic.build_hydrograph_payload(
-            huc8, date_str, window_days=window_days
+            huc8, date_str, window_days=window_days, reach=reach_param(request)
         )
         return JsonResponse(payload)
     except ValueError as exc:  # unparseable, or outside the retrospective record
@@ -596,6 +604,20 @@ def validate_huc8(huc8):
         raise ValueError("huc8 must be an 8-digit code")
 
 
+def reach_param(request):
+    """The ``?reach=`` NWM reach ID to plot instead of the outlet, or None.
+
+    Raises ValueError unless it is a positive whole number, since it becomes
+    part of a directory name and a fetch request.
+    """
+    value = request.GET.get("reach")
+    if not value:
+        return None
+    if not (value.isdigit() and len(value) <= 12 and int(value) > 0):
+        raise ValueError("reach must be an NWM reach ID (a positive whole number)")
+    return int(value)
+
+
 @controller(url="api/forecast/options")
 @csrf_exempt
 def forecast_options(request):
@@ -627,10 +649,15 @@ def forecast_options(request):
 @controller(url="api/forecast/hydrograph/{huc8}/{cycle_token}")
 @csrf_exempt
 def forecast_hydrograph(request, huc8, cycle_token):
-    """Outlet-reach discharge for all 18 hours of one short-range cycle."""
+    """Outlet-reach discharge for all 18 hours of one short-range cycle.
+
+    Optional ``?reach=ID`` plots that NWM reach instead of the outlet.
+    """
     try:
         validate_huc8(huc8)
-        return JsonResponse(forecast.build_hydrograph_payload(huc8, cycle_token))
+        return JsonResponse(
+            forecast.build_hydrograph_payload(huc8, cycle_token, reach=reach_param(request))
+        )
     except ValueError as exc:
         return JsonResponse({"status": "error", "message": str(exc)}, status=400)
     except FileNotFoundError as exc:
@@ -638,6 +665,19 @@ def forecast_hydrograph(request, huc8, cycle_token):
     except Exception as exc:
         traceback.print_exc()
         return JsonResponse({"status": "error", "message": str(exc)}, status=500)
+
+
+@controller(url="api/reach-name/{feature_id}", regex=r"\d{1,12}")
+@csrf_exempt
+def reach_name(request, feature_id):
+    """An NWM reach's name from NOAA NWPS, for the reach popup.
+
+    ``name`` is '' for an unnamed reach and null when NWPS could not say;
+    either way the page still has the reach's ID to show.
+    """
+    return JsonResponse(
+        {"status": "success", "feature_id": int(feature_id), "name": nwps.reach_name(feature_id)}
+    )
 
 
 @controller(url="api/flood-map-preview/forecast/{huc8}/{cycle_token}/{valid_token}")

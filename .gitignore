@@ -34,3 +34,8 @@ services.yml
 
 # Session handoff notes (working scratch, not project docs)
 handoff.md
+
+# API keys: they live in ~/.fimserve_viewer/keys.env, outside the repo
+# (see README "API keys"); this catches a copy dropped in by mistake.
+keys.env
+*.env

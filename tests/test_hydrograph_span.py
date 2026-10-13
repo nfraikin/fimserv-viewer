@@ -102,8 +102,10 @@ class BuildPayloadTests(unittest.TestCase):
             patcher = mock.patch.object(fim_logic, target, value)
             patcher.start()
             self.addCleanup(patcher.stop)
+        self.root = root
         self.calls = []
         self.location_ids = []
+        self.no_flow = set()   # reaches teehr returns no rows for, like a reservoir's
 
     def fake_fetch(self, nwm_version, variable_name, start_date, end_date,
                    location_ids, output_parquet_dir, **_):
@@ -121,13 +123,15 @@ class BuildPayloadTests(unittest.TestCase):
         path = Path(output_parquet_dir) / name
         if path.exists():  # teehr's overwrite_output=False default
             return
-        hourly_rows(hours, location_ids, 1.0).to_parquet(path)
+        hourly_rows(hours, [f for f in location_ids if f not in self.no_flow], 1.0).to_parquet(path)
 
-    def build(self, date_str, days=14):
+    def build(self, date_str, days=14, reach=None, huc8=None):
         with mock.patch(
             "teehr.fetching.nwm.retrospective_points.nwm_retro_to_parquet", self.fake_fetch
         ):
-            return fim_logic.build_hydrograph_payload(self.HUC8, date_str, window_days=days)
+            return fim_logic.build_hydrograph_payload(
+                huc8 or self.HUC8, date_str, window_days=days, reach=reach
+            )
 
     def test_default_date_returns_a_trimmed_series(self):
         payload = self.build("2023-01-31-00-00-00")
@@ -172,6 +176,38 @@ class BuildPayloadTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "NWM v3.0 retrospective coverage"):
             self.build("2023-02-01-00-00-00")
         self.assertEqual(self.calls, [])
+
+
+    # ``reach``: the series of a reach clicked on the map, not the outlet's.
+
+    def test_clicked_reach_is_fetched_instead_of_the_outlet(self):
+        payload = self.build("2022-04-27-12-00-00", reach=101)
+        self.assertEqual(payload["feature_id"], 101)
+        self.assertEqual(self.location_ids, [[101]])
+        self.assertIsNone(payload["outlet"])
+        self.assertEqual(payload["datetime"], "2022-04-27 12:00:00")
+
+    def test_reach_and_outlet_for_the_same_span_get_their_own_series(self):
+        # teehr keeps a parquet already on disk for the span, so a directory
+        # shared with the outlet would hand the reach the outlet's file.
+        self.build("2022-04-27-12-00-00")
+        payload = self.build("2022-04-27-12-00-00", reach=101)
+        self.assertEqual(payload["feature_id"], 101)
+        self.assertEqual(self.location_ids, [[202], [101]])
+        self.assertTrue((self.retro_dir / "reach_101").is_dir())
+
+    def test_reach_needs_no_generated_flood_map(self):
+        payload = self.build("2022-04-27-12-00-00", reach=303, huc8="07070004")
+        self.assertEqual(payload["feature_id"], 303)
+        self.assertTrue(
+            (self.root / "output" / "flood_07070004" / "discharge"
+             / "nwm30_retrospective" / "reach_303").is_dir()
+        )
+
+    def test_reach_without_streamflow_says_so(self):
+        self.no_flow = {101}
+        with self.assertRaisesRegex(FileNotFoundError, "reach 101.*reservoir"):
+            self.build("2022-04-27-12-00-00", reach=101)
 
 
 if __name__ == "__main__":

@@ -1531,8 +1531,65 @@ def outlet_reach_feature(huc8: str, feature_id: int) -> Optional[dict]:
     }
 
 
+def _reach_hydrograph_dir(huc8: str, reach: int) -> Path:
+    """Where a clicked reach's retrospective parquets go.
+
+    One directory per reach, because teehr keeps a parquet already on disk for
+    the same span instead of fetching again: a shared directory would hand back
+    whichever reach was fetched first. Under the HUC's existing run directory
+    when there is one, so the reach data sits with the rest of the HUC's.
+    """
+    flood_dirs = _candidate_flood_dirs(huc8)
+    base = next((d for d in flood_dirs if d.is_dir()), flood_dirs[0])
+    return base / "discharge" / "nwm30_retrospective" / f"reach_{int(reach)}"
+
+
+def _fetch_retro_series(
+    feature_id: int, start: datetime, end: datetime, retro_dir: Path
+) -> Tuple[list, list]:
+    """``(times, values)`` of one reach's NWM v3.0 retrospective streamflow.
+
+    Raises RuntimeError when teehr writes nothing, FileNotFoundError when the
+    reach has no streamflow in the span (reservoir-interior reaches have none).
+    """
+    import pandas as pd
+    import teehr.fetching.nwm.retrospective_points as nwm_retro
+
+    _patch_teehr_datetime_parser()  # same `.dt` accessor fix as flood-map Step 2
+
+    retro_dir.mkdir(parents=True, exist_ok=True)
+    nwm_retro.nwm_retro_to_parquet(
+        nwm_version="nwm30",
+        variable_name="streamflow",
+        start_date=start,
+        end_date=end,
+        location_ids=[feature_id],
+        output_parquet_dir=str(retro_dir),
+    )
+
+    parquet_file = retro_dir / retro_parquet_name(start, end)
+    if not parquet_file.exists():
+        raise RuntimeError("Could not fetch NWM retrospective data.")
+
+    df = pd.read_parquet(parquet_file)
+    df["value_time"] = pd.to_datetime(df["value_time"])
+    # teehr keeps a parquet already on disk for this span rather than
+    # overwriting it, and those from before the outlet change hold every
+    # reach in the HUC, so pick the reach out rather than taking the file whole.
+    hydro = df[df["location_id"] == f"nwm30-{feature_id}"]
+
+    if hydro.empty:
+        raise FileNotFoundError(
+            f"No NWM streamflow for reach {feature_id}. Reaches inside a "
+            "reservoir have none."
+        )
+
+    hydro = hydro.sort_values("value_time")
+    return [t.isoformat() for t in hydro["value_time"]], hydro["value"].tolist()
+
+
 def build_hydrograph_payload(
-    huc8: str, date_str: str, window_days: int = 14
+    huc8: str, date_str: str, window_days: int = 14, reach: Optional[int] = None
 ) -> dict:
     """
     Build {status, times, values, huc8, feature_id, outlet, datetime, window_days,
@@ -1543,6 +1600,10 @@ def build_hydrograph_payload(
     (see ``outlet_reach_feature``). Averaging every reach instead, as this once did,
     weighted a headwater trickle the same as the main stem and so reported a
     number no place in the watershed actually carried.
+
+    ``reach`` plots that NWM reach instead, one clicked on the map. It needs no
+    generated flood map, since there is no outlet to find, and ``outlet`` is
+    None: the page marks the reach where it was clicked.
 
     ``window_days`` is the half-width of the fetched span: the series runs from
     that many days before the selected moment to the same distance after. A
@@ -1571,6 +1632,23 @@ def build_hydrograph_payload(
     # Clamp: a stray large value would ask teehr for an unbounded fetch.
     window_days = max(1, min(30, int(window_days)))
     start, end, clipped = hydrograph_fetch_span(date_obj, window_days)
+
+    if reach is not None:
+        reach = int(reach)
+        times, values = _fetch_retro_series(
+            reach, start, end, _reach_hydrograph_dir(huc8, reach)
+        )
+        return {
+            "status": "success",
+            "times": times,
+            "values": values,
+            "huc8": huc8,
+            "feature_id": reach,
+            "outlet": None,
+            "datetime": datetime_str,
+            "window_days": window_days,
+            "clipped": clipped,
+        }
 
     feature_ids = None
     csv_pattern = f"NWM_*_{huc8}.csv"
@@ -1601,41 +1679,9 @@ def build_hydrograph_payload(
             "No feature IDs found. Generate a flood map first for this HUC8 and date."
         )
     outlet = outlet_feature_id(huc8, feature_ids)
-
-    import teehr.fetching.nwm.retrospective_points as nwm_retro
-
-    _patch_teehr_datetime_parser()  # same `.dt` accessor fix as flood-map Step 2
-
-    retro_dir = HUC_dir / "discharge" / "nwm30_retrospective"
-    retro_dir.mkdir(parents=True, exist_ok=True)
-
-    nwm_retro.nwm_retro_to_parquet(
-        nwm_version="nwm30",
-        variable_name="streamflow",
-        start_date=start,
-        end_date=end,
-        location_ids=[outlet],
-        output_parquet_dir=str(retro_dir),
+    times, values = _fetch_retro_series(
+        outlet, start, end, HUC_dir / "discharge" / "nwm30_retrospective"
     )
-
-    parquet_file = retro_dir / retro_parquet_name(start, end)
-    if not parquet_file.exists():
-        raise RuntimeError("Could not fetch NWM retrospective data.")
-
-    df = pd.read_parquet(parquet_file)
-    df["value_time"] = pd.to_datetime(df["value_time"])
-    # teehr keeps a parquet already on disk for this span rather than
-    # overwriting it, and those from before the outlet change hold every
-    # reach in the HUC, so pick the outlet out rather than taking the file whole.
-    hydro = df[df["location_id"] == f"nwm30-{outlet}"]
-
-    if hydro.empty:
-        raise FileNotFoundError(f"No streamflow data for outlet reach {outlet}.")
-
-    hydro = hydro.sort_values("value_time")
-
-    times = [t.isoformat() for t in hydro["value_time"]]
-    values = hydro["value"].tolist()
 
     return {
         "status": "success",

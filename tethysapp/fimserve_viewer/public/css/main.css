@@ -895,3 +895,37 @@ img.flood-raster-crisp.leaflet-image-layer {
 .leaflet-hydroOutlet-pane .leaflet-tooltip {
     z-index: 300;
 }
+
+/* A clicked NWM reach: a purple diamond, apart from the orange outlet circle.
+   The diamond is the inner span, since Leaflet positions the icon itself with
+   a transform. */
+.reach-marker span {
+    display: block;
+    width: 10px;
+    height: 10px;
+    background: #8e44ad;
+    border: 2px solid #fff;
+    box-shadow: 0 0 2px rgba(0, 0, 0, 0.6);
+    transform: rotate(45deg);
+}
+
+.reach-popup .hydrograph-panel {
+    padding: 6px;
+    margin-top: 8px;
+}
+
+/* A picture in the popup, not the sidebar's clickable plot. */
+.reach-popup .hydrograph-panel svg {
+    cursor: default;
+}
+
+.reach-popup-remove {
+    margin-top: 6px;
+    padding: 0;
+    border: none;
+    background: none;
+    color: #7f8c8d;
+    font-size: 11px;
+    text-decoration: underline;
+    cursor: pointer;
+}
