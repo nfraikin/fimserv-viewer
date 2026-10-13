@@ -1,4 +1,4 @@
-# FIMserve Viewer
+# FIMserv Viewer
 
 **A web app that draws flood maps for any US watershed, for any date between Feb 1979 and Jan 2023.**
 

@@ -1,4 +1,4 @@
-# FIMserve Viewer - Deployment notes (fresh clone)
+# FIMserv Viewer - Deployment notes (fresh clone)
 
 **Repository:** https://github.com/tasfia26/tethysapp-fimserve_viewer  
 **Date:** July 2026  

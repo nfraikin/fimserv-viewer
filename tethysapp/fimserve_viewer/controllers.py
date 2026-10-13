@@ -1,5 +1,5 @@
 """
-controllers.py — Tethys controllers for the FIMserve Viewer.
+controllers.py — Tethys controllers for the FIMserv Viewer.
 
 These are direct ports of the Flask routes in the original `server.py`. Each
 controller is a thin wrapper that:
