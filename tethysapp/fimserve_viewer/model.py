@@ -13,6 +13,7 @@ class JobKind:
     NWM = "nwm"
     CUSTOM = "custom"
     FORECAST = "forecast"
+    RETURN_PERIOD = "return_period"
 
 
 class JobStatus:

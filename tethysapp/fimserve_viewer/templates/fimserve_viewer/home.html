@@ -80,11 +80,13 @@
           <h2>HUC8 Details</h2>
           <button class="close-btn" onclick="closeSidebar()">×</button>
       </div>
-      {# Two pages for one watershed: the retrospective record, or the live NWM #}
-      {# short-range forecast. main.js swaps the page and remembers the choice. #}
+      {# Three pages for one watershed: the retrospective record, the live NWM  #}
+      {# short-range forecast, or an N-year return-period flood. main.js swaps #}
+      {# the page and remembers the choice.                                     #}
       <div class="mode-tabs" role="tablist" aria-label="Flood data source">
           <button type="button" role="tab" class="mode-tab is-active" id="mode-tab-retro" data-mode="retro" aria-selected="true" aria-controls="sidebar-content">Retrospective</button>
           <button type="button" role="tab" class="mode-tab" id="mode-tab-forecast" data-mode="forecast" aria-selected="false" aria-controls="sidebar-content" tabindex="-1">Forecast</button>
+          <button type="button" role="tab" class="mode-tab" id="mode-tab-rp" data-mode="rp" aria-selected="false" aria-controls="sidebar-content" tabindex="-1">Return Period</button>
       </div>
       <div id="sidebar-content">
           <div class="no-selection">

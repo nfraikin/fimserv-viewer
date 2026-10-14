@@ -88,6 +88,16 @@ def forecast_pattern(huc8: str, cycle_token: str, valid_token: str) -> str:
     return f"NWMSR_{cycle_token}_{valid_token}_{huc8}_inundation.tif"
 
 
+def return_period_pattern(huc8: str, years: int) -> str:
+    """Filename of the return-period result for one HUC8 and period.
+
+    Exact, like the forecast pattern: ``years`` is validated against the
+    offered periods first. A return period is a fixed statistic, so there is
+    only ever one result per HUC8 and period.
+    """
+    return f"NWMRP_{years}yr_{huc8}_inundation.tif"
+
+
 def labels_name_for_tif(tif_name: str) -> str:
     """Streamflow-labels filename co-named with a result tif."""
     return tif_name.replace("_inundation.tif", "_qlabels.geojson")
