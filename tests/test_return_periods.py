@@ -99,5 +99,57 @@ class GetReturnPeriodsTests(unittest.TestCase):
         self.assertNotIn("1", return_periods._cache)
 
 
+class ValidateYearsTests(unittest.TestCase):
+    def test_offered_periods_pass_as_ints(self):
+        self.assertEqual(return_periods.validate_years("100"), 100)
+        self.assertEqual(return_periods.validate_years(2), 2)
+
+    def test_anything_else_is_refused(self):
+        for bad in (None, "", "3", "10yr", "1e2", "../2", 0, -5, 1000):
+            with self.subTest(bad=bad), self.assertRaisesRegex(ValueError, "2, 5, 10, 25, 50, 100"):
+                return_periods.validate_years(bad)
+
+
+class FetchPeriodFlowsTests(unittest.TestCase):
+    def response(self, records):
+        resp = mock.Mock()
+        resp.json.return_value = records
+        return resp
+
+    def test_batches_asks_for_one_period_and_drops_missing(self):
+        ids = list(range(1, return_periods.BATCH_SIZE + 3))  # two batches
+        sent = []
+
+        def fake_get(url, params, headers, timeout):
+            batch = [int(c) for c in params["comids"].split(",")]
+            sent.append((batch, params["return_periods"], headers))
+            # Reach 2 sits in a reservoir: the API answers None for it.
+            return self.response(
+                [{"feature_id": c, "return_period_10": None if c == 2 else c * 1.5} for c in batch]
+            )
+
+        with mock.patch.object(return_periods.requests, "get", side_effect=fake_get):
+            flows = return_periods.fetch_period_flows(ids + [1], 10, "k")
+
+        self.assertEqual([len(b) for b, _, _ in sent], [return_periods.BATCH_SIZE, 2])
+        self.assertTrue(all(rp == "10" and h == {"x-api-key": "k"} for _, rp, h in sent))
+        self.assertNotIn(2, flows)
+        self.assertEqual(flows[1], 1.5)
+        self.assertEqual(len(flows), len(ids) - 1)
+
+    def test_http_error_propagates(self):
+        resp = mock.Mock()
+        resp.raise_for_status.side_effect = return_periods.requests.HTTPError("400")
+        with mock.patch.object(return_periods.requests, "get", return_value=resp):
+            with self.assertRaises(return_periods.requests.HTTPError):
+                return_periods.fetch_period_flows([1], 2, "k")
+
+    def test_result_basename_stays_out_of_other_lookups(self):
+        name = return_periods.result_basename("03030004", 25)
+        self.assertEqual(name, "NWMRP_25yr_03030004")
+        self.assertFalse(name.startswith("NWM_"))
+        self.assertFalse(name.startswith("NWMSR_"))
+
+
 if __name__ == "__main__":
     unittest.main()

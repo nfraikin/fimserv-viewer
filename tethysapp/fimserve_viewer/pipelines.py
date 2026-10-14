@@ -13,7 +13,7 @@ import logging
 from datetime import datetime
 from typing import Callable
 
-from . import fim_logic, forecast
+from . import fim_logic, forecast, return_periods
 from .model import JobKind, JobStatus
 from .results import labels_name_for_tif, preview_name_for_tif, results
 
@@ -77,6 +77,10 @@ def forecast_job_key(huc8: str, cycle_token: str, valid_token: str) -> str:
     return f"{JobKind.FORECAST}:{huc8}:{cycle_token}:{valid_token}"
 
 
+def return_period_job_key(huc8: str, years: int) -> str:
+    return f"{JobKind.RETURN_PERIOD}:{huc8}:{years}"
+
+
 def run_nwm_pipeline(job: dict, progress: Progress) -> str:
     huc8 = job["huc8"]
     datetime_str = job["params"]["datetime_str"]
@@ -103,8 +107,8 @@ def run_custom_pipeline(job: dict, progress: Progress) -> str:
     return results.store(map_file, huc8)
 
 
-def publish_forecast_labels(huc8: str, csv_path, tif_name: str) -> None:
-    """Store streamflow labels built from the forecast CSV beside the result tif."""
+def publish_csv_labels(huc8: str, csv_path, tif_name: str) -> None:
+    """Store streamflow labels built from a discharge CSV (forecast or return period) beside the result tif."""
     labels_json = fim_logic.build_q_labels_from_csv(huc8, csv_path)
     if labels_json:
         results.store_text(labels_json, huc8, labels_name_for_tif(tif_name))
@@ -131,7 +135,32 @@ def run_forecast_pipeline(job: dict, progress: Progress) -> str:
         progress(JobStatus.STEP3, "Step 3/3: Computing flood inundation...")
         map_file = forecast.run_inundation(huc8, csv_path)
         tif_name = map_file.name
-        publish_forecast_labels(huc8, csv_path, tif_name)
+        publish_csv_labels(huc8, csv_path, tif_name)
+    finally:
+        csv_path.unlink(missing_ok=True)
+    finalize_result(huc8, map_file, tif_name)
+    return results.store(map_file, huc8)
+
+
+def run_return_period_pipeline(job: dict, progress: Progress) -> str:
+    huc8 = job["huc8"]
+    years = return_periods.validate_years(job["params"]["years"])
+    # Read when the job runs, never stored in the job record.
+    key = return_periods.configured_api_key()
+    progress(JobStatus.STEP1, "Step 1/3: Downloading HUC8 hydrofabric...")
+    fim_logic._run_flood_step1_download_huc8(huc8)
+    progress(
+        JobStatus.STEP2,
+        f"Step 2/3: Fetching every reach's {years}-year flow from the CIROH NWM API...",
+    )
+    csv_path = return_periods.write_discharge_csv(huc8, years, key)
+    # Like the forecast CSV, only an input to this run; the labels below
+    # carry its flows on.
+    try:
+        progress(JobStatus.STEP3, "Step 3/3: Computing flood inundation...")
+        map_file = forecast.run_inundation(huc8, csv_path)
+        tif_name = map_file.name
+        publish_csv_labels(huc8, csv_path, tif_name)
     finally:
         csv_path.unlink(missing_ok=True)
     finalize_result(huc8, map_file, tif_name)

@@ -733,7 +733,7 @@ img.flood-raster-crisp.leaflet-image-layer {
     cursor: default;
 }
 
-/* ---- Retrospective / Forecast tabs (issue #31) ------------------------- */
+/* ---- Retrospective / Forecast / Return Period tabs (issue #31) --------- */
 .mode-tabs {
     display: flex;
     margin: -5px 0 18px;
@@ -770,6 +770,12 @@ img.flood-raster-crisp.leaflet-image-layer {
 /* Amber marks everything forecast, so it is never mistaken for the archive. */
 .mode-tab[data-mode="forecast"].is-active {
     background: #d35400;
+}
+
+/* Teal for return periods: a design flood, apart from the archive's blue and
+   the forecast's amber. */
+.mode-tab[data-mode="rp"].is-active {
+    background: #138d75;
 }
 
 .mode-tab:focus-visible {
@@ -938,4 +944,119 @@ img.flood-raster-crisp.leaflet-image-layer {
     font-size: 11px;
     text-decoration: underline;
     cursor: pointer;
+}
+
+/* ---- Return Period page ------------------------------------------------- */
+.rp-panel {
+    padding: 15px;
+    background: #f0faf7;
+    border: 1px solid #bfe6dc;
+    border-radius: 8px;
+    margin-top: 10px;
+}
+
+.rp-table {
+    width: 100%;
+    border-collapse: collapse;
+    background: #fff;
+    border: 1px solid #e3e6e8;
+    border-radius: 4px;
+    font-size: 12px;
+    color: #2c3e50;
+}
+
+.rp-table th,
+.rp-table td {
+    padding: 5px 8px;
+    text-align: left;
+    border-bottom: 1px solid #eef0f2;
+}
+
+.rp-table th {
+    font-weight: 600;
+    color: #5d6d7e;
+    background: #f4f6f8;
+}
+
+.rp-table tbody tr:last-child td {
+    border-bottom: none;
+}
+
+/* A period, its swatch and its "ready" badge stay on one line. */
+.rp-table td:first-child {
+    white-space: nowrap;
+}
+
+.rp-table .rp-flow {
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+}
+
+.rp-table tr.is-pickable {
+    cursor: pointer;
+}
+
+.rp-table tr.is-pickable:hover td {
+    background: #f4f6f8;
+}
+
+.rp-table tr.is-pickable:focus-visible {
+    outline: 2px solid #138d75;
+    outline-offset: -2px;
+}
+
+.rp-table tr.is-selected td {
+    background: #e3f4ef;
+    font-weight: 600;
+}
+
+.rp-swatch {
+    display: inline-block;
+    width: 10px;
+    height: 10px;
+    margin-right: 6px;
+    border-radius: 2px;
+    vertical-align: -1px;
+}
+
+/* The period picker: the label and the unit toggle share a line above it. */
+.rp-picker-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    margin-bottom: 6px;
+}
+
+.rp-picker-head .forecast-label {
+    margin-bottom: 0;
+}
+
+/* A radio dot per row, so the rows read as choices rather than data. */
+.rp-radio {
+    display: inline-block;
+    width: 12px;
+    height: 12px;
+    margin-right: 7px;
+    border: 2px solid #9aa7b1;
+    border-radius: 50%;
+    vertical-align: -2px;
+    box-sizing: border-box;
+}
+
+.rp-table tr.is-selected .rp-radio {
+    border-color: #138d75;
+    background: radial-gradient(circle, #138d75 0 3px, #fff 3.5px);
+}
+
+.rp-ready {
+    display: inline-block;
+    margin-left: 4px;
+    padding: 1px 6px;
+    border-radius: 8px;
+    background: #d4efe7;
+    color: #0e6655;
+    font-size: 10px;
+    font-weight: 600;
+    vertical-align: 1px;
 }

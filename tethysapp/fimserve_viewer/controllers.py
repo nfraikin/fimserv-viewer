@@ -36,6 +36,7 @@ from .results import (
     nwm_pattern,
     preview_name_for_tif,
     results,
+    return_period_pattern,
 )
 
 
@@ -683,14 +684,6 @@ def reach_name(request, feature_id):
 # =============================================================================
 # /api/return-periods/{feature_id}
 # =============================================================================
-def ciroh_api_key_setting():
-    """The app's ciroh_api_key setting, or None when unset or not yet synced."""
-    try:
-        return App.get_custom_setting("ciroh_api_key")
-    except Exception:
-        return None
-
-
 @controller(url="api/return-periods/{feature_id}")
 @csrf_exempt
 def get_return_periods(request, feature_id):
@@ -704,7 +697,7 @@ def get_return_periods(request, feature_id):
             {"status": "error", "message": "feature_id must be a number"}, status=400
         )
     try:
-        key = return_periods.api_key(ciroh_api_key_setting())
+        key = return_periods.configured_api_key()
         periods = return_periods.get_return_periods(feature_id, key)
         return JsonResponse(
             {"status": "success", "feature_id": int(feature_id), "return_periods": periods}
@@ -762,5 +755,134 @@ def get_flood_map_forecast(request, huc8, cycle_token, valid_token):
         if request.GET.get("reclass", "0") == "1":
             return reclassified_response(key, f"{Path(key).stem}_reclassified.tif")
         return results.response(key, download_name=Path(key).name)
+    except Exception as exc:
+        return JsonResponse({"status": "error", "message": str(exc)}, status=500)
+
+
+# =============================================================================
+# Return periods: every reach of a HUC8 at its own NWM N-year flow, keyed by
+# the period. ``years`` is checked against the offered periods before it
+# becomes a storage filename.
+# =============================================================================
+def return_period_key_or_error(huc8, years):
+    """Return (key, years, None) for a stored result, or (None, None, JsonResponse)."""
+    try:
+        validate_huc8(huc8)
+        years = return_periods.validate_years(years)
+    except ValueError as exc:
+        return None, None, JsonResponse({"status": "error", "message": str(exc)}, status=400)
+    key = results.find(huc8, return_period_pattern(huc8, years))
+    if key is None:
+        return None, None, JsonResponse(
+            {
+                "status": "error",
+                "message": (
+                    f"No {years}-year flood map found for HUC8 {huc8}. Generate it first."
+                ),
+            },
+            status=404,
+        )
+    return key, years, None
+
+
+@controller(url="api/return-period/options")
+@csrf_exempt
+def return_period_options(request):
+    """The periods on offer and, with ``?huc8=``, which already have a map.
+
+    Also reports whether the HUC's hydrofabric is on disk, so the page can
+    warn about the first-run download and knows the outlet can be found.
+    """
+    payload = {"status": "success", "years": list(return_periods.RETURN_PERIOD_YEARS)}
+    huc8 = request.GET.get("huc8")
+    if huc8:
+        try:
+            validate_huc8(huc8)
+        except ValueError as exc:
+            return JsonResponse({"status": "error", "message": str(exc)}, status=400)
+        payload["generated"] = [
+            years
+            for years in return_periods.RETURN_PERIOD_YEARS
+            if results.names(huc8, return_period_pattern(huc8, years))
+        ]
+        payload["hydrofabric_cached"] = not fim_logic._missing_step1_artifacts(huc8)
+    return JsonResponse(payload)
+
+
+@controller(url="api/return-period/outlet/{huc8}")
+@csrf_exempt
+def return_period_outlet(request, huc8):
+    """The HUC's outlet reach (GeoJSON, for the map marker) and its return periods.
+
+    The outlet is the same reach the hydrographs plot. Its return periods
+    come back as ``return_periods``, or ``return_periods_error`` when CIROH
+    can't supply them; the marker is still worth showing either way.
+    """
+    try:
+        validate_huc8(huc8)
+        feature_id = fim_logic.outlet_feature_id(huc8, forecast.feature_ids_for_huc(huc8))
+    except ValueError as exc:
+        return JsonResponse({"status": "error", "message": str(exc)}, status=400)
+    except FileNotFoundError as exc:
+        return JsonResponse({"status": "error", "message": str(exc)}, status=404)
+    except Exception as exc:
+        traceback.print_exc()
+        return JsonResponse({"status": "error", "message": str(exc)}, status=500)
+
+    payload = {
+        "status": "success",
+        "huc8": huc8,
+        "feature_id": feature_id,
+        "outlet": fim_logic.outlet_reach_feature(huc8, feature_id),
+    }
+    try:
+        payload["return_periods"] = return_periods.get_return_periods(
+            feature_id, return_periods.configured_api_key()
+        )
+    except (return_periods.NotConfigured, LookupError) as exc:
+        payload["return_periods_error"] = str(exc)
+    except Exception as exc:
+        traceback.print_exc()
+        payload["return_periods_error"] = f"Could not reach the CIROH NWM API: {exc}"
+    return JsonResponse(payload)
+
+
+@controller(url="api/flood-map-preview/return-period/{huc8}/{years}")
+@csrf_exempt
+def flood_map_preview_return_period(request, huc8, years):
+    """PNG preview + bounds for a return-period flood map."""
+    key, _years, error = return_period_key_or_error(huc8, years)
+    if error is not None:
+        return error
+    try:
+        return JsonResponse({"status": "success", **preview_payload(huc8, key)})
+    except Exception as exc:
+        return JsonResponse({"status": "error", "message": str(exc)}, status=500)
+
+
+@controller(url="api/flood-q-labels/return-period/{huc8}/{years}")
+@csrf_exempt
+def flood_q_labels_return_period(request, huc8, years):
+    """Each reach's N-year flow, as stored beside the result (empty if none)."""
+    key, _years, error = return_period_key_or_error(huc8, years)
+    if error is not None:
+        return error
+    geojson_str = results.text(labels_name_for_tif(key))
+    if geojson_str is None:
+        geojson_str = json.dumps(fim_logic._empty_feature_collection())
+    return HttpResponse(geojson_str, content_type="application/geo+json")
+
+
+@controller(url="api/get-flood-map-return-period/{huc8}/{years}")
+@csrf_exempt
+def get_flood_map_return_period(request, huc8, years):
+    """Download a return-period flood map .tif (optionally reclassified to 0/1)."""
+    key, years, error = return_period_key_or_error(huc8, years)
+    if error is not None:
+        return error
+    try:
+        if request.GET.get("reclass", "0") == "1":
+            return reclassified_response(key, f"{huc8}_{years}yr_reclassified.tif")
+        return results.response(key, download_name=f"{huc8}_{years}yr.tif")
     except Exception as exc:
         return JsonResponse({"status": "error", "message": str(exc)}, status=500)

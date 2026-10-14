@@ -458,15 +458,18 @@ let floodUIMapRequestSeq = 0;
 let lastSidebarHuc8 = null;
 /** Whether the watershed in the sidebar has HAND-FIM coverage (tabs need it after render). */
 let lastSidebarCovered = false;
-/** Which flood product produced the overlay on the map ('retro' | 'forecast'), or null. */
+/** Which flood product produced the overlay on the map ('retro' | 'forecast' | 'rp'), or null. */
 let floodOverlayMode = null;
 
-/** Sidebar page: 'retro' (NWM retrospective) or 'forecast' (NWM short-range, issue #31).
- *  Remembered per browser so a forecast user isn't sent back to the archive every visit. */
+/** Sidebar page: 'retro' (NWM retrospective), 'forecast' (NWM short-range, issue #31)
+ *  or 'rp' (an N-year return-period flood). Remembered per browser so a forecast user
+ *  isn't sent back to the archive every visit. */
+const SIDEBAR_MODES = ['retro', 'forecast', 'rp'];
 const SIDEBAR_MODE_KEY = 'fimserve_viewer.sidebarMode';
 let sidebarMode = (function () {
     try {
-        return localStorage.getItem(SIDEBAR_MODE_KEY) === 'forecast' ? 'forecast' : 'retro';
+        const saved = localStorage.getItem(SIDEBAR_MODE_KEY);
+        return SIDEBAR_MODES.indexOf(saved) >= 0 ? saved : 'retro';
     } catch (e) {
         return 'retro';   // storage blocked (private window, previews)
     }
@@ -534,6 +537,7 @@ function displayHUC8Details(properties) {
     lastSidebarHuc8 = huc8Code;
     clearHydrograph();
     forecastState.huc8 = null;   // the forecast page is rebuilt below, so its options are too
+    rpState.huc8 = null;         // and the return-period page
 
     sidebar.classList.add('open');
 
@@ -652,6 +656,12 @@ function displayHUC8Details(properties) {
                 : `<div class="info-section"><h3>Forecast Flood Map</h3>${noCoverageSection}</div>`}
         </div>
 
+        <div class="mode-page" data-mode-page="rp"${sidebarMode === 'rp' ? '' : ' hidden'}>
+            ${covered
+                ? returnPeriodSectionHtml(huc8Code)
+                : `<div class="info-section"><h3>Return-Period Flood Map</h3>${noCoverageSection}</div>`}
+        </div>
+
         <div class="info-section">
             <div class="sidebar-attribution" aria-label="Partner organizations">
                 <div class="sidebar-attribution-title">Authorization &amp; partners</div>
@@ -669,6 +679,7 @@ function displayHUC8Details(properties) {
     if (covered) {
         reattachActiveFloodJob(huc8Code);
         if (sidebarMode === 'forecast') loadForecastOptions(huc8Code);
+        if (sidebarMode === 'rp') loadReturnPeriodOptions(huc8Code);
     }
 }
 
@@ -1269,6 +1280,8 @@ let hydroShowReturnPeriods = false;
 /** Return periods per NWM reach: {status: 'loading'|'ok'|'error', periods, message}.
  *  Kept across watersheds; a reach's return periods never change. */
 const hydroReturnPeriods = {};
+/** The request behind each entry, so a second caller can wait on the first. */
+const hydroReturnPeriodRequests = {};
 
 /** Amber (2-year) to deep red (100-year), as in the flood-warning notebook. */
 const HYDRO_RP_COLORS = ['#fdb04b', '#fd8d3c', '#fc5b2e', '#e8301f', '#c8141f', '#a10026'];
@@ -1305,6 +1318,7 @@ function syncHydrographUnitButtons() {
 function rerenderHydrographs() {
     if (hydroRetro.data) renderHydrograph(hydroRetro);
     if (hydroForecast.data) renderHydrograph(hydroForecast);
+    if (rpState.options) renderReturnPeriodPicker();
 }
 
 /** Units are shared with the map discharge labels, so flip both and keep the
@@ -1329,23 +1343,29 @@ function setHydrographReturnPeriods(on) {
     rerenderHydrographs();
 }
 
-/** Fetch a reach's return periods once, then redraw whichever panels plot it. */
-async function ensureHydroReturnPeriods(featureId) {
+/** Fetch a reach's return periods once, then redraw whichever panels plot it.
+ *  Resolves to the reach's entry. */
+function ensureHydroReturnPeriods(featureId) {
     const key = String(featureId);
-    if (hydroReturnPeriods[key]) return;
+    if (hydroReturnPeriodRequests[key]) return hydroReturnPeriodRequests[key];
+    if (hydroReturnPeriods[key]) return Promise.resolve(hydroReturnPeriods[key]);
     hydroReturnPeriods[key] = { status: 'loading' };
-    let entry;
-    try {
-        const r = await fetch('./api/return-periods/' + encodeURIComponent(key) + '/');
-        const data = await r.json();
-        entry = (r.ok && data.status === 'success' && data.return_periods && data.return_periods.length)
-            ? { status: 'ok', periods: data.return_periods }
-            : { status: 'error', message: data.message || 'No return periods for this reach.' };
-    } catch (e) {
-        entry = { status: 'error', message: e.message };
-    }
-    hydroReturnPeriods[key] = entry;
-    rerenderHydrographs();
+    hydroReturnPeriodRequests[key] = (async function () {
+        let entry;
+        try {
+            const r = await fetch('./api/return-periods/' + encodeURIComponent(key) + '/');
+            const data = await r.json();
+            entry = (r.ok && data.status === 'success' && data.return_periods && data.return_periods.length)
+                ? { status: 'ok', periods: data.return_periods }
+                : { status: 'error', message: data.message || 'No return periods for this reach.' };
+        } catch (e) {
+            entry = { status: 'error', message: e.message };
+        }
+        hydroReturnPeriods[key] = entry;
+        rerenderHydrographs();
+        return entry;
+    })();
+    return hydroReturnPeriodRequests[key];
 }
 
 /** The return periods to draw on a panel, or null (toggle off, not loaded, failed). */
@@ -1699,6 +1719,9 @@ function clearHydrograph() {
         ctx.data = null;
         ctx.selTime = null;
     });
+    rpState.outletSeq++;
+    rpState.outlet = null;
+    rpState.outletStatus = null;
     clearHydrographOutlet();
 }
 
@@ -1871,7 +1894,9 @@ function reachPopupHtml(reach) {
         ? '<p class="hydrograph-note">' + escapeHtml(h ? h.message : 'Fetching NWM streamflow…') + '</p>'
         : h.status === 'error'
             ? '<p class="hydrograph-note hydrograph-error">' + escapeHtml(h.message) + '</p>'
-            : reachHydrographHtml(reach);
+            : h.returnPeriods
+                ? reachReturnPeriodsHtml(reach)
+                : reachHydrographHtml(reach);
     const id = escapeHtml(String(reach.featureId));
     return '<div class="popup-title">NWM reach ' + id + '</div>'
         + '<div class="popup-info"><strong>Name:</strong> ' + name + '</div>'
@@ -1914,6 +1939,10 @@ async function loadReachName(reach) {
 }
 
 async function loadReachHydrograph(reach) {
+    if (sidebarMode === 'rp') {
+        loadReachReturnPeriods(reach);
+        return;
+    }
     const huc8 = lastSidebarHuc8;
     const forecast = sidebarMode === 'forecast';
     const id = encodeURIComponent(reach.featureId);
@@ -2056,7 +2085,10 @@ function showFloodSuccessModal(huc8, result) {
     var lines = [];
     if (huc8) lines.push('<strong>HUC8:</strong> ' + floodSuccessEscapeHtml(huc8));
     var isForecast = !!(result && result.forecast);
-    if (isForecast) {
+    var isReturnPeriod = !!(result && result.returnPeriod);
+    if (isReturnPeriod) {
+        lines.push('<strong>Return period:</strong> ' + floodSuccessEscapeHtml(result.returnPeriod));
+    } else if (isForecast) {
         lines.push('<strong>Forecast valid:</strong> ' + floodSuccessEscapeHtml(result.valid));
         lines.push('<strong>NWM cycle:</strong> ' + floodSuccessEscapeHtml(result.cycle));
     } else if (result && result.datetime) {
@@ -2067,7 +2099,9 @@ function showFloodSuccessModal(huc8, result) {
         if (!tagline.dataset.retroText) tagline.dataset.retroText = tagline.textContent;
         tagline.textContent = isForecast
             ? 'The NWM short-range forecast met HAND - this map is a forecast, not an observation.'
-            : tagline.dataset.retroText;
+            : isReturnPeriod
+                ? 'Every reach at its own NWM return-period flow met HAND - a design flood, not a past event.'
+                : tagline.dataset.retroText;
     }
     detailDiv.innerHTML = lines.length ? lines.join('<br>') : 'Generation completed.';
     overlay.classList.add('flood-success-overlay--visible');
@@ -2104,10 +2138,13 @@ const FLOOD_JOB_MAX_POLL_FAILURES = 15;
 const FLOOD_MODE_UI = {
     retro: { statusId: 'flood-map-status', buttonId: 'generate-flood-map-btn', buttonLabel: 'Generate Flood Map' },
     forecast: { statusId: 'fc-flood-map-status', buttonId: 'fc-generate-btn', buttonLabel: 'Generate Forecast Flood Map' },
+    rp: { statusId: 'rp-flood-map-status', buttonId: 'rp-generate-btn', buttonLabel: 'Generate Return-Period Flood Map' },
 };
 
 function floodJobMode(job) {
-    return job && job.kind === 'forecast' ? 'forecast' : 'retro';
+    if (job && job.kind === 'forecast') return 'forecast';
+    if (job && job.kind === 'return_period') return 'rp';
+    return 'retro';
 }
 
 function setFloodStatus(html, mode) {
@@ -2165,7 +2202,9 @@ async function fetchJobJson(url, options) {
 function floodJobResultSummary(job) {
     const params = job.params || {};
     const summary = { file_name: job.result_file ? job.result_file.split('/').pop() : '' };
-    if (floodJobMode(job) === 'forecast') {
+    if (floodJobMode(job) === 'rp') {
+        summary.returnPeriod = params.years ? returnPeriodLabel(params.years) : '';
+    } else if (floodJobMode(job) === 'forecast') {
         summary.forecast = true;
         summary.valid = params.valid ? formatUtcHour(isoFromToken(params.valid)) : '';
         summary.cycle = params.cycle
@@ -2223,6 +2262,11 @@ function finishFloodJob(huc8, job) {
     setFloodStatus(`<span style="color: #27ae60;">✓ Flood map generated successfully!</span>${fileLine}`, mode);
     if (mode === 'forecast') {
         if (huc8 === lastSidebarHuc8) loadForecastHydrograph(huc8, (job.params || {}).cycle);
+    } else if (mode === 'rp') {
+        if (huc8 === lastSidebarHuc8) {
+            loadReturnPeriodOptions(huc8);
+            loadReturnPeriodOutlet(huc8);
+        }
     } else {
         loadHydrograph(huc8);
     }
@@ -2382,7 +2426,7 @@ function syncModeTabs() {
 }
 
 function setSidebarMode(mode) {
-    if (mode !== 'retro' && mode !== 'forecast') return;
+    if (SIDEBAR_MODES.indexOf(mode) < 0) return;
     const changed = mode !== sidebarMode;
     sidebarMode = mode;
     try {
@@ -2393,8 +2437,9 @@ function setSidebarMode(mode) {
         page.hidden = page.dataset.modePage !== mode;
     });
     if (!changed) return;
-    // A retrospective map left on screen under the Forecast tab (or the reverse)
-    // would read as the other product, so switching pages takes it down.
+    // A map left on screen under another tab (a retrospective map under the
+    // Forecast tab, say) would read as that tab's product, so switching pages
+    // takes it down.
     if (floodOverlayMode && floodOverlayMode !== mode) {
         const shownBy = floodOverlayMode;
         clearFloodLayer();
@@ -2403,6 +2448,9 @@ function setSidebarMode(mode) {
     if (mode === 'forecast' && lastSidebarHuc8 && lastSidebarCovered) {
         if (forecastState.huc8 !== lastSidebarHuc8) loadForecastOptions(lastSidebarHuc8);
         else pruneStaleForecastOptions();
+    }
+    if (mode === 'rp' && lastSidebarHuc8 && lastSidebarCovered && rpState.huc8 !== lastSidebarHuc8) {
+        loadReturnPeriodOptions(lastSidebarHuc8);
     }
 }
 
@@ -2723,4 +2771,305 @@ async function loadForecastHydrograph(huc8, cycleToken) {
     } finally {
         if (btn && mySeq === ctx.seq) { btn.disabled = false; btn.textContent = 'Show forecast hydrograph'; }
     }
+}
+
+// =============================================================================
+// Return Period page
+// -----------------------------------------------------------------------------
+// The third sidebar page maps an N-year flood: every reach of the watershed at
+// its own NWM return-period flow (2- to 100-year, from the CIROH NWM API), so
+// the map shows what that event looks like on every stream at once rather than
+// one discharge everywhere. A return period is a fixed statistic, so each
+// period has one map per watershed; once made it is just shown.
+// The period is chosen from a table, one row per period, which also lists the
+// watershed outlet's flow for each (the orange marker the hydrographs use).
+// Clicking a stream in this page shows that reach's flows instead of a
+// hydrograph.
+// Backed by GET api/return-period/options, GET api/return-period/outlet/{huc8}
+// and POST api/jobs/generate-flood-map-return-period.
+// =============================================================================
+
+/** `options` is the last api/return-period/options payload and `huc8` the watershed
+ *  it was loaded for (null once the page is rebuilt); `seq` drops stale responses.
+ *  `years` is the chosen period, kept across watersheds. `outlet` is the last
+ *  outlet payload, `outletStatus` 'loading' | 'error' | null while there is none
+ *  (with `outletError`), and `outletSeq` its staleness guard. */
+const rpState = {
+    options: null, huc8: null, seq: 0, years: 100,
+    outlet: null, outletStatus: null, outletError: '', outletSeq: 0,
+};
+
+/** "100-year (1% annual chance)": the chance of a flow that big in any one year is 1/N. */
+function returnPeriodLabel(years) {
+    return years + '-year (' + (100 / years) + '% annual chance)';
+}
+
+function returnPeriodColor(years) {
+    const i = [2, 5, 10, 25, 50, 100].indexOf(Number(years));
+    return HYDRO_RP_COLORS[i >= 0 ? i : HYDRO_RP_COLORS.length - 1];
+}
+
+function returnPeriodSectionHtml(huc8) {
+    return `
+        <div class="info-section">
+            <h3>Return-Period Flood Map</h3>
+            <div class="rp-panel">
+                <div class="rp-picker-head">
+                    <span class="forecast-label" id="rp-picker-label">Choose a return period:</span>
+                    <div class="hydrograph-units" role="group" aria-label="Discharge units">
+                        <button type="button" data-unit="m3s" class="hydrograph-unit-btn${showFloodDischargeInFt3s ? '' : ' is-active'}" onclick="setHydrographUnits(false)">m&sup3;/s</button>
+                        <button type="button" data-unit="cfs" class="hydrograph-unit-btn${showFloodDischargeInFt3s ? ' is-active' : ''}" onclick="setHydrographUnits(true)">ft&sup3;/s</button>
+                    </div>
+                </div>
+                <div id="rp-picker"><p class="forecast-hint">Loading return periods&hellip;</p></div>
+                <p id="rp-outlet-note" class="forecast-hint"></p>
+                <p class="forecast-hint">Each reach floods at its own flow for the chosen period: the NWM retrospective's flood-frequency flows, from the CIROH NWM API. Reaches inside reservoirs have none and are left unmapped.</p>
+                <p id="rp-warm-note" class="forecast-hint forecast-warn" hidden>This watershed's HAND data isn't cached yet, so the first run downloads it before mapping (about 5&ndash;15 minutes).</p>
+                <button id="rp-generate-btn" class="forecast-btn forecast-btn--generate" onclick="generateReturnPeriodFloodMap('${huc8}')" disabled>Generate Return-Period Flood Map</button>
+                <button id="rp-download-btn" class="forecast-btn forecast-btn--download" onclick="downloadProcessedReturnPeriodMap('${huc8}')" disabled>Download processed (reclassified)</button>
+                <p class="forecast-hint">Reclassifies: flooded &rarr; 1, no flood &rarr; 0.</p>
+                <button id="rp-show-btn" class="forecast-btn forecast-btn--show" onclick="showFloodMapOnMapReturnPeriod('${huc8}')" disabled>Show on map</button>
+                <div id="rp-flood-map-status" class="forecast-status"></div>
+            </div>
+        </div>`;
+}
+
+// ---- Options ----------------------------------------------------------------
+
+async function loadReturnPeriodOptions(huc8) {
+    const mySeq = ++rpState.seq;
+    try {
+        const r = await fetch('./api/return-period/options/?huc8=' + encodeURIComponent(huc8));
+        const data = await r.json().catch(function () { return {}; });
+        if (mySeq !== rpState.seq || huc8 !== lastSidebarHuc8) return;
+        if (!r.ok || data.status !== 'success') throw new Error(data.message || ('HTTP ' + r.status));
+        const firstLoad = rpState.huc8 !== huc8;
+        rpState.options = data;
+        rpState.huc8 = huc8;
+        if (data.years.indexOf(rpState.years) < 0) rpState.years = data.years[data.years.length - 1];
+        const warm = document.getElementById('rp-warm-note');
+        if (warm) warm.hidden = data.hydrofabric_cached !== false;
+        renderReturnPeriodPicker();
+        // With the hydrofabric on disk the outlet can be found straight away,
+        // so its flows and marker show up with the page.
+        if (firstLoad && data.hydrofabric_cached && !rpState.outlet) loadReturnPeriodOutlet(huc8);
+    } catch (e) {
+        if (mySeq !== rpState.seq) return;
+        rpState.options = null;
+        const picker = document.getElementById('rp-picker');
+        if (picker) picker.innerHTML = '<p class="forecast-hint hydrograph-error">Could not load return periods: ' + escapeHtml(e.message) + '</p>';
+    }
+}
+
+/** The chosen period in years, or null before the options load. */
+function selectedReturnPeriod() {
+    if (!rpState.options || !document.getElementById('rp-picker')) return null;
+    return rpState.options.years.indexOf(rpState.years) >= 0 ? rpState.years : null;
+}
+
+/** Choose a period, from a click or a key on its row. */
+function pickReturnPeriod(years) {
+    if (!rpState.options || rpState.options.years.indexOf(years) < 0) return;
+    rpState.years = years;
+    renderReturnPeriodPicker();
+    const row = document.querySelector('#rp-picker [data-years="' + years + '"]');
+    if (row) row.focus({ preventScroll: true });
+}
+
+/** Up/Down (and Home/End) move the choice between rows, as in a radio group. */
+function returnPeriodPickerKey(evt, years) {
+    const all = rpState.options ? rpState.options.years : [];
+    const i = all.indexOf(years);
+    let next = null;
+    if (evt.key === 'ArrowDown' || evt.key === 'ArrowRight') next = all[Math.min(all.length - 1, i + 1)];
+    else if (evt.key === 'ArrowUp' || evt.key === 'ArrowLeft') next = all[Math.max(0, i - 1)];
+    else if (evt.key === 'Home') next = all[0];
+    else if (evt.key === 'End') next = all[all.length - 1];
+    else if (evt.key === 'Enter' || evt.key === ' ') next = years;
+    if (next == null) return;
+    evt.preventDefault();
+    pickReturnPeriod(next);
+}
+
+/** The picker: one row per period with its annual chance and the outlet's flow,
+ *  the chosen one highlighted. Also syncs the buttons and the outlet note. */
+function renderReturnPeriodPicker() {
+    const picker = document.getElementById('rp-picker');
+    const opts = rpState.options;
+    if (!picker || !opts) return;
+    const years = selectedReturnPeriod();
+    const generated = opts.generated || [];
+    const flows = {};
+    ((rpState.outlet && rpState.outlet.return_periods) || []).forEach(function (rp) { flows[rp.years] = rp.value; });
+    const rows = opts.years.map(function (y) {
+        return { years: y, value: flows[y], ready: generated.indexOf(y) >= 0 };
+    });
+    picker.innerHTML = returnPeriodTableHtml(rows, years, {
+        pickable: true,
+        flowHeading: 'Outlet flow',
+        pending: rpState.outletStatus === 'loading' ? '…' : '–',
+    });
+
+    const ready = !!years && generated.indexOf(years) >= 0;
+    const gen = document.getElementById('rp-generate-btn');
+    if (gen && gen.dataset.busy !== '1') gen.disabled = !years;
+    ['rp-download-btn', 'rp-show-btn'].forEach(function (id) {
+        const el = document.getElementById(id);
+        if (el) el.disabled = !ready;
+    });
+    renderReturnPeriodOutletNote();
+}
+
+/** Where the flow column comes from, or why it is empty. */
+function renderReturnPeriodOutletNote() {
+    const note = document.getElementById('rp-outlet-note');
+    if (!note) return;
+    const data = rpState.outlet;
+    if (rpState.outletStatus === 'loading') {
+        note.textContent = 'Finding the watershed outlet and its flows…';
+    } else if (rpState.outletStatus === 'error') {
+        note.innerHTML = '<span class="hydrograph-error">' + escapeHtml(rpState.outletError) + '</span>';
+    } else if (!data) {
+        note.textContent = 'Outlet flows appear once this watershed\'s HAND data is downloaded, after its first map.';
+    } else {
+        const where = outletReachLabel({ data: { featureId: data.feature_id } });
+        note.innerHTML = (data.return_periods && data.return_periods.length)
+            ? 'Flows ' + where + ', marked in orange on the map. ' + outletReservoirNote()
+            : 'The outlet is marked in orange on the map ' + where + '. <span class="hydrograph-error">Its return periods are unavailable: '
+                + escapeHtml(data.return_periods_error || 'none for this reach.') + '</span>';
+    }
+}
+
+// ---- Actions ----------------------------------------------------------------
+
+async function generateReturnPeriodFloodMap(huc8) {
+    const years = selectedReturnPeriod();
+    if (!years) {
+        setFloodStatus('<span style="color: #e74c3c;">Pick a return period first.</span>', 'rp');
+        return;
+    }
+    setFloodStatus('<span style="color: #3498db;">Generating the ' + escapeHtml(returnPeriodLabel(years)) + ' flood map…</span>', 'rp');
+    try {
+        const job = await submitFloodJob('./api/jobs/generate-flood-map-return-period/', { huc8: huc8, years: years });
+        await watchFloodJob(huc8, job);
+    } catch (error) {
+        floodGenerateOverlayHide();
+        setFloodStatus('<span style="color: #e74c3c;">Error: ' + escapeHtml(error.message) + '</span>', 'rp');
+    }
+}
+
+async function showFloodMapOnMapReturnPeriod(huc8) {
+    const years = selectedReturnPeriod();
+    if (!years) return;
+    const mySeq = ++floodUIMapRequestSeq;
+    const path = encodeURIComponent(huc8) + '/' + years + '/';
+    setFloodStatus('<span style="color: #3498db;">Loading preview...</span>', 'rp');
+    try {
+        const r = await fetch('./api/flood-map-preview/return-period/' + path);
+        if (mySeq !== floodUIMapRequestSeq) return;
+        const data = await r.json();
+        if (mySeq !== floodUIMapRequestSeq) return;
+        if (data.status !== 'success') {
+            setFloodStatus('<span style="color: #e74c3c;">' + escapeHtml(data.message || 'Not found') + '</span>', 'rp');
+            return;
+        }
+        drawFloodPreview(huc8, data, 'rp',
+            'NWM ' + returnPeriodLabel(years) + ' flood: every reach at its own ' + years
+            + '-year flow. A design flood, not a past event.');
+        setFloodStatus('<span style="color: #27ae60;">✓ ' + escapeHtml(years + '-year') + ' flood map shown on map</span> '
+            + '<a href="#" onclick="clearFloodLayer(); setFloodStatus(\'\', \'rp\'); return false;" style="font-size: 11px; margin-left: 6px;">Clear</a>', 'rp');
+        await loadFloodQLabels('./api/flood-q-labels/return-period/' + path, mySeq);
+    } catch (e) {
+        if (mySeq === floodUIMapRequestSeq) {
+            setFloodStatus('<span style="color: #e74c3c;">Error: ' + escapeHtml(e.message) + '</span>', 'rp');
+        }
+    }
+}
+
+async function downloadProcessedReturnPeriodMap(huc8) {
+    const years = selectedReturnPeriod();
+    if (!years) return;
+    await downloadReclassified(
+        './api/get-flood-map-return-period/' + encodeURIComponent(huc8) + '/' + years + '/?reclass=1',
+        huc8 + '_' + years + 'yr_reclassified.tif',
+        'rp'
+    );
+}
+
+// ---- Outlet -----------------------------------------------------------------
+
+async function loadReturnPeriodOutlet(huc8) {
+    const mySeq = ++rpState.outletSeq;
+    rpState.outletStatus = 'loading';
+    renderReturnPeriodPicker();
+    try {
+        const r = await fetch('./api/return-period/outlet/' + encodeURIComponent(huc8) + '/');
+        if (mySeq !== rpState.outletSeq) return;
+        const data = await r.json();
+        if (mySeq !== rpState.outletSeq) return;
+        if (!r.ok || data.status !== 'success') {
+            throw new Error(data.message || 'Could not find this watershed\'s outlet.');
+        }
+        rpState.outlet = data;
+        rpState.outletStatus = null;
+        // The hydrographs' return-period lines can reuse these.
+        if (data.return_periods && data.return_periods.length) {
+            hydroReturnPeriods[String(data.feature_id)] = { status: 'ok', periods: data.return_periods };
+        }
+        showHydrographOutlet(data.outlet);
+        // Show the outlet even when the map is zoomed out to the country.
+        if (hydroOutletLatLng && !map.getBounds().contains(hydroOutletLatLng)) panToHydrographOutlet();
+    } catch (e) {
+        if (mySeq !== rpState.outletSeq) return;
+        rpState.outletStatus = 'error';
+        rpState.outletError = 'Could not load the outlet: ' + e.message;
+    }
+    renderReturnPeriodPicker();
+}
+
+/** Return-period rows as a table, the `selected` period highlighted. Rows are
+ *  {years, value (m³/s, or undefined while unknown), ready}. With `pickable`
+ *  the table is the page's period picker (a radio group); otherwise a picture. */
+function returnPeriodTableHtml(rows, selected, opts) {
+    const pickable = !!opts.pickable;
+    const body = rows.map(function (rp) {
+        const on = rp.years === selected;
+        const attrs = pickable
+            ? ' data-years="' + rp.years + '" role="radio" aria-checked="' + on + '" tabindex="' + (on ? 0 : -1) + '"'
+                + ' onclick="pickReturnPeriod(' + rp.years + ')" onkeydown="returnPeriodPickerKey(event, ' + rp.years + ')"'
+            : '';
+        const flow = rp.value == null ? (opts.pending || '–') : escapeHtml(formatNumber(hydroDisplayValue(rp.value)));
+        return '<tr class="' + (on ? 'is-selected' : '') + (pickable ? ' is-pickable' : '') + '"' + attrs + '>'
+            + '<td>' + (pickable ? '<span class="rp-radio" aria-hidden="true"></span>' : '')
+            + '<span class="rp-swatch" style="background:' + returnPeriodColor(rp.years) + '"></span>' + rp.years + '-year'
+            + (rp.ready ? ' <span class="rp-ready" title="This map is already made: Show on map, or generate it again">&check; ready</span>' : '')
+            + '</td>'
+            + '<td>' + (100 / rp.years) + '%</td>'
+            + '<td class="rp-flow">' + flow + '</td>'
+            + '</tr>';
+    }).join('');
+    return '<table class="rp-table' + (pickable ? ' rp-picker' : '') + '"'
+        + (pickable ? ' role="radiogroup" aria-labelledby="rp-picker-label"' : '') + '>'
+        + '<thead><tr><th>Return period</th><th>Annual chance</th>'
+        + '<th class="rp-flow">' + (opts.flowHeading || 'Flow') + ' (' + hydroUnitLabel() + ')</th></tr></thead>'
+        + '<tbody>' + body + '</tbody></table>';
+}
+
+// ---- Reach popups -------------------------------------------------------------
+
+async function loadReachReturnPeriods(reach) {
+    reach.hydro = { status: 'loading', message: 'Fetching this reach\'s return periods from the CIROH NWM API…' };
+    refreshReachPopup(reach);
+    const entry = await ensureHydroReturnPeriods(reach.featureId);
+    reach.hydro = entry.status === 'ok'
+        ? { status: 'ok', returnPeriods: entry.periods }
+        : { status: 'error', message: 'Return periods unavailable: ' + entry.message };
+    refreshReachPopup(reach);
+}
+
+function reachReturnPeriodsHtml(reach) {
+    return '<div class="hydrograph-panel">'
+        + returnPeriodTableHtml(reach.hydro.returnPeriods, selectedReturnPeriod() || rpState.years, {})
+        + '<p class="hydrograph-note">NWM return-period flows for this reach (CIROH NWM API). '
+        + 'The highlighted row is the period chosen in the sidebar.</p></div>';
 }

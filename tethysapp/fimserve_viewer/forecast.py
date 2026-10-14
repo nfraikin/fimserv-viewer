@@ -388,7 +388,9 @@ def write_discharge_csv(huc8: str, cycle: datetime, valid: datetime) -> Path:
 
 
 def run_inundation(huc8: str, csv_path: Path) -> Path:
-    """Step 3: run HAND inundation on the forecast CSV; return the raster.
+    """Step 3: run HAND inundation on a discharge CSV; return the raster.
+
+    Used for forecast and return-period CSVs alike.
 
     Only the raster named for this CSV counts - never a wildcard match
     (see issue #4) - so a failed run cannot publish some other result.
