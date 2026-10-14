@@ -475,6 +475,24 @@ let sidebarMode = (function () {
     }
 })();
 
+/** Whether the basin facts (name, states, area, load date) are expanded. They start
+ *  folded so the tab's flood controls sit near the top; the choice is remembered. */
+const BASIN_DETAILS_KEY = 'fimserve_viewer.basinDetailsOpen';
+let basinDetailsOpen = (function () {
+    try {
+        return localStorage.getItem(BASIN_DETAILS_KEY) === '1';
+    } catch (e) {
+        return false;
+    }
+})();
+
+function setBasinDetailsOpen(open) {
+    basinDetailsOpen = !!open;
+    try {
+        localStorage.setItem(BASIN_DETAILS_KEY, basinDetailsOpen ? '1' : '0');
+    } catch (e) { /* storage blocked; the choice lasts for this page only */ }
+}
+
 (function bindFloodLabelsToggle() {
     const cb = document.getElementById('flood-labels-toggle');
     if (!cb) return;
@@ -607,8 +625,15 @@ function displayHUC8Details(properties) {
         </div>` : '';
 
     content.innerHTML = `
-        <div class="huc8-code">${getHUC8(properties)}</div>
-        
+        <details class="basin-details"${basinDetailsOpen ? ' open' : ''} ontoggle="setBasinDetailsOpen(this.open)">
+        <summary class="basin-summary" title="Show or hide the basin details">
+            <span class="basin-summary-text">
+                <span class="huc8-code">${getHUC8(properties)}</span>
+                <span class="basin-summary-name">${escapeHtml(properties.name || '')}</span>
+            </span>
+            <span class="basin-summary-toggle"><span class="basin-summary-hint"></span><span class="basin-chevron" aria-hidden="true"></span></span>
+        </summary>
+        <div class="basin-details-body">
         <div class="info-section">
             <h3>Basic Information</h3>
             <div class="info-item">
@@ -640,7 +665,9 @@ function displayHUC8Details(properties) {
                 <span class="info-value">${properties.loaddate ? new Date(properties.loaddate).toLocaleDateString() : 'N/A'}</span>
             </div>
         </div>
-        
+        </div>
+        </details>
+
         <div class="mode-page" data-mode-page="retro"${sidebarMode === 'retro' ? '' : ' hidden'}>
             <div class="info-section">
                 <h3>Generate Flood Map with NWM Data</h3>
