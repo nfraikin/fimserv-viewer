@@ -1060,3 +1060,29 @@ img.flood-raster-crisp.leaflet-image-layer {
     font-weight: 600;
     vertical-align: 1px;
 }
+
+/* A note over the map, e.g. that BYU's monthly Mapbox map loads are used up. */
+.map-notice {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    max-width: 360px;
+    padding: 10px 12px;
+    background: #fff;
+    border-left: 4px solid #3498db;
+    border-radius: 6px;
+    box-shadow: 0 1px 5px rgba(0,0,0,0.25);
+    font-size: 12px;
+    line-height: 1.4;
+    color: #2c3e50;
+}
+
+.map-notice-close {
+    flex: none;
+    border: none;
+    background: none;
+    font-size: 16px;
+    line-height: 1;
+    color: #7f8c8d;
+    cursor: pointer;
+}

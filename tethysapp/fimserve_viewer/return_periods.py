@@ -14,6 +14,10 @@ the key stays on the server, as the app's ``ciroh_api_key`` setting, the
 ``CIROH_API_KEY`` environment variable, or a ``CIROH_API_KEY=`` line in the
 keys file outside the repo (see ``local_keys``).
 
+The key is BYU Hydroinformatics', shared for a limited number of calls a
+month, so every request is counted first and refused once the month's calls
+are used up (see ``api_usage``).
+
 Docs: https://nwm-api.ciroh.org/docs
 """
 
@@ -24,7 +28,7 @@ from pathlib import Path
 
 import requests
 
-from . import local_keys
+from . import api_usage, local_keys
 
 log = logging.getLogger(__name__)
 
@@ -123,6 +127,14 @@ def parse_response(payload, feature_id):
     return out
 
 
+def reserve_calls(calls=1):
+    """Count ``calls`` CIROH requests against BYU's monthly limit before sending them.
+
+    Raises ``api_usage.UsageLimitReached`` once the month's calls are used up.
+    """
+    api_usage.counter().reserve(api_usage.CIROH, calls)
+
+
 def get_return_periods(feature_id, key):
     """Return periods for one NWM reach (m³/s), cached per reach."""
     feature_id = str(feature_id)
@@ -132,6 +144,7 @@ def get_return_periods(feature_id, key):
             _cache.move_to_end(feature_id)
             return cached
 
+    reserve_calls()
     resp = requests.get(
         API_URL,
         params={"comids": feature_id, "output_format": "json"},
@@ -162,6 +175,9 @@ def fetch_period_flows(feature_ids, years, key):
     field = f"return_period_{years}"
     ids = list(dict.fromkeys(int(fid) for fid in feature_ids))
     flows = {}
+    # Every batch is reserved up front, so a map is never left half-fetched
+    # by running out of calls partway through.
+    reserve_calls(-(-len(ids) // BATCH_SIZE))
     for start in range(0, len(ids), BATCH_SIZE):
         batch = ids[start:start + BATCH_SIZE]
         resp = requests.get(

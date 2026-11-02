@@ -1,9 +1,9 @@
-"""Database model for background flood-map jobs."""
+"""Database model for background flood-map jobs and BYU API usage."""
 
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import JSON, Column, DateTime, Index, String, Text, inspect, text
+from sqlalchemy import JSON, Column, DateTime, Index, Integer, String, Text, inspect, text
 from sqlalchemy.orm import declarative_base
 
 Base = declarative_base()
@@ -87,8 +87,21 @@ class Job(Base):
         }
 
 
+class ApiUsage(Base):
+    """Calls in one calendar month (UTC) to an API whose key BYU provides.
+
+    One row per API per month; see ``api_usage`` for what counts as a call.
+    """
+
+    __tablename__ = "api_usage"
+
+    api = Column(String(32), primary_key=True)
+    month = Column(String(7), primary_key=True)  # "YYYY-MM"
+    calls = Column(Integer, nullable=False, default=0)
+
+
 def init_jobs_db(engine, first_time):
-    """Create the job tables in the app persistent store.
+    """Create the job and API usage tables in the app persistent store.
 
     ``create_all`` only creates missing tables; it never adds new columns to
     a table that already exists. Columns added after the first install are

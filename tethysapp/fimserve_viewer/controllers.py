@@ -27,7 +27,7 @@ from django.http import (
 from django.views.decorators.csrf import csrf_exempt
 from tethys_sdk.routing import controller
 
-from . import fim_logic, forecast, local_keys, nwps, return_periods
+from . import api_usage, fim_logic, forecast, local_keys, nwps, return_periods
 from .app import App
 from .results import (
     custom_download_name,
@@ -112,10 +112,42 @@ def home(request):
 
     The Mapbox token comes from the keys file (see ``local_keys``), not the
     code. It is a public token, made for the browser; without one the page
-    leaves out the Mapbox basemap and NWM reaches.
+    leaves out the Mapbox basemap and NWM reaches. It is also left out once
+    this month's BYU-provided map loads are used up (see ``api_usage``), and
+    the page says why.
     """
+    token = local_keys.get("MAPBOX_TOKEN") or ""
+    limit_message = ""
+    if token:
+        try:
+            api_usage.counter().check(api_usage.MAPBOX)
+        except api_usage.UsageLimitReached as exc:
+            token, limit_message = "", str(exc)
     return App.render(
-        request, "home.html", {"mapbox_token": local_keys.get("MAPBOX_TOKEN") or ""}
+        request,
+        "home.html",
+        {"mapbox_token": token, "mapbox_limit_message": limit_message},
+    )
+
+
+# =============================================================================
+# /api/usage  (this month's calls to the APIs BYU provides keys for)
+# =============================================================================
+@controller(url="api/usage")
+def usage_summary(request):
+    """This month's Mapbox map loads and CIROH calls against BYU's limit."""
+    return JsonResponse({"status": "success", **api_usage.counter().summary()})
+
+
+@controller(url="api/usage/mapbox-load")
+@csrf_exempt
+def record_mapbox_load(request):
+    """Count one Mapbox map load, reported by the page as it creates a Mapbox map."""
+    if request.method != "POST":
+        return HttpResponseNotAllowed(["POST"])
+    used = api_usage.counter().record(api_usage.MAPBOX)
+    return JsonResponse(
+        {"status": "success", "used": used, "limit": api_usage.monthly_limit()}
     )
 
 
@@ -704,6 +736,10 @@ def get_return_periods(request, feature_id):
         )
     except return_periods.NotConfigured as exc:
         return JsonResponse({"status": "error", "message": str(exc)}, status=503)
+    except api_usage.UsageLimitReached as exc:
+        return JsonResponse(
+            {"status": "error", "reason": "byu_limit", "message": str(exc)}, status=429
+        )
     except LookupError as exc:
         return JsonResponse({"status": "error", "message": str(exc)}, status=404)
     except Exception as exc:
@@ -839,7 +875,7 @@ def return_period_outlet(request, huc8):
         payload["return_periods"] = return_periods.get_return_periods(
             feature_id, return_periods.configured_api_key()
         )
-    except (return_periods.NotConfigured, LookupError) as exc:
+    except (return_periods.NotConfigured, api_usage.UsageLimitReached, LookupError) as exc:
         payload["return_periods_error"] = str(exc)
     except Exception as exc:
         traceback.print_exc()

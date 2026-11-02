@@ -387,6 +387,25 @@ On macOS / Linux, make the file readable only by you: `chmod 600 ~/.fimserve_vie
 An environment variable of the same name works too, and wins over the file. To
 keep the file somewhere else, set `FIMSERVE_VIEWER_KEYS` to its path.
 
+### Monthly limit on BYU's keys
+
+The Mapbox token and CIROH key this app has been shared with are BYU
+Hydroinformatics' own, provided on the condition that each is used at most 500
+times a month in total, across every portal that runs the app. The app counts
+every use in its database, separately per API, and once a month's limit is used
+up it turns that feature off with a message saying so, until the 1st of the
+next month (UTC):
+
+| API | What counts as one use | Once the month is used up |
+|---|---|---|
+| Mapbox | One map load: each Mapbox map a page creates (the basemap and the NWM reaches make one each) | New pages get no token, so they start on Streets with no NWM reaches |
+| CIROH NWM API | One request to the return-period API (cached answers are free; a HUC8 map takes one per 500 reaches) | Hydrograph return-period lines and the Return Period tab are unavailable |
+
+`GET /apps/fimserve-viewer/api/usage/` shows this month's counts. Each portal
+keeps its own count, with a default limit of 500. Any other portal or
+development copy running on the same keys must set `BYU_API_MONTHLY_LIMIT` (in
+`keys.env` or the environment) so all the limits together stay within 500.
+
 ## Git LFS (for contributors)
 
 This repo ships a 57 MB watershed-boundaries file

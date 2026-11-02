@@ -22,8 +22,15 @@ const map = L.map('map', {
 // reach tileset. The server reads it from the keys file (local_keys.py) rather
 // than the code, where GitHub's push protection rejects it; without one, the
 // Mapbox basemap and NWM reaches are left out and Streets is the default.
+//
+// BYU shares the token for a limited number of map loads a month (see
+// api_usage.py). Each Mapbox map the page creates reports itself, and once the
+// month is used up the server sends a message instead of the token.
 const MAPBOX_TOKEN = (window.APP_STATIC && window.APP_STATIC.mapboxToken) || '';
-if (!MAPBOX_TOKEN) {
+const MAPBOX_LIMIT_MESSAGE = (window.APP_STATIC && window.APP_STATIC.mapboxLimitMessage) || '';
+if (MAPBOX_LIMIT_MESSAGE) {
+    showMapNotice(MAPBOX_LIMIT_MESSAGE);
+} else if (!MAPBOX_TOKEN) {
     console.warn('No MAPBOX_TOKEN in ~/.fimserve_viewer/keys.env: the Mapbox basemap and NWM reaches are off.');
 }
 const MAPBOX_ATTRIBUTION = '© <a href="https://www.mapbox.com/about/maps/">Mapbox</a> © <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>';
@@ -35,11 +42,46 @@ const USGS_ATTRIBUTION = 'Imagery: <a href="https://www.usgs.gov/programs/nation
  *  No padding: the plugin draws a margin around the view, and a margin past
  *  the edge of the world makes Mapbox shift its view away from Leaflet's. */
 function mapboxLayer(options, LayerClass) {
-    return new (LayerClass || L.MapboxGL)(Object.assign({
+    return new (countedMapboxClass(LayerClass || L.MapboxGL))(Object.assign({
         accessToken: MAPBOX_TOKEN,
         projection: 'mercator',
         padding: 0,
     }, options));
+}
+
+/** LayerClass, telling the server of each Mapbox map it creates: one map load.
+ *  The plugin creates a layer's map the first time it is shown and reuses it
+ *  after, so a page makes at most one load per Mapbox layer. */
+function countedMapboxClass(LayerClass) {
+    return LayerClass.extend({
+        _initGL: function () {
+            const isNew = !this._glMap;
+            LayerClass.prototype._initGL.call(this);
+            if (isNew) {
+                fetch('./api/usage/mapbox-load/', { method: 'POST', keepalive: true })
+                    .catch(function () { /* the load goes uncounted; the page still works */ });
+            }
+        },
+    });
+}
+
+/** A dismissible note in the map's lower left, e.g. the Mapbox limit message. */
+function showMapNotice(message) {
+    const notice = L.control({ position: 'bottomleft' });
+    notice.onAdd = function () {
+        const div = L.DomUtil.create('div', 'map-notice');
+        div.setAttribute('role', 'status');
+        const text = L.DomUtil.create('span', '', div);
+        text.textContent = message;
+        const close = L.DomUtil.create('button', 'map-notice-close', div);
+        close.type = 'button';
+        close.setAttribute('aria-label', 'Dismiss');
+        close.textContent = '×';
+        L.DomEvent.disableClickPropagation(div);
+        L.DomEvent.on(close, 'click', function () { notice.remove(); });
+        return div;
+    };
+    notice.addTo(map);
 }
 
 /** Mapbox will not zoom out past where the world fills the map's height (it
@@ -2187,6 +2229,7 @@ async function fetchJobJson(url, options) {
         // restarting — transient, so callers may retry.
         const e = new Error((result && result.message) || response.statusText || ('HTTP ' + response.status));
         e.retryable = response.status >= 500;
+        e.byuLimit = !!(result && result.reason === 'byu_limit');
         throw e;
     }
     if (parseErr || !result || result.status !== 'success') {
@@ -2954,7 +2997,10 @@ async function generateReturnPeriodFloodMap(huc8) {
         await watchFloodJob(huc8, job);
     } catch (error) {
         floodGenerateOverlayHide();
-        setFloodStatus('<span style="color: #e74c3c;">Error: ' + escapeHtml(error.message) + '</span>', 'rp');
+        // BYU's monthly CIROH calls are used up: a notice, not a failure.
+        setFloodStatus(error.byuLimit
+            ? '<span style="color: #7f8c8d;">' + escapeHtml(error.message) + '</span>'
+            : '<span style="color: #e74c3c;">Error: ' + escapeHtml(error.message) + '</span>', 'rp');
     }
 }
 

@@ -12,7 +12,7 @@ from django.http import HttpRequest, HttpResponse, HttpResponseNotAllowed, JsonR
 from django.views.decorators.csrf import csrf_exempt
 from tethys_sdk.routing import controller
 
-from . import forecast, pipelines, return_periods
+from . import api_usage, forecast, pipelines, return_periods
 from .fim_logic import _parse_generate_flood_json_body
 from .jobs import get_job_manager
 from .model import JobKind
@@ -170,6 +170,14 @@ def submit_return_period_job(request):
         huc8, years = parse_return_period_body(json_body(request))
     except ValueError as exc:
         return error_response(str(exc))
+    # Once BYU's monthly CIROH calls are used up, say so at once rather than
+    # after Step 1's download; the job reserves its calls when it makes them.
+    try:
+        api_usage.counter().check(api_usage.CIROH)
+    except api_usage.UsageLimitReached as exc:
+        return JsonResponse(
+            {"status": "error", "reason": "byu_limit", "message": str(exc)}, status=429
+        )
     # Checked here so a missing key is reported at once, not after Step 1's
     # download; the job reads the key again itself rather than storing it.
     try:
