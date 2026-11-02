@@ -12,14 +12,18 @@ What counts as one call:
 - CIROH: one HTTP request to the return-period API. Answers served from the
   in-process cache cost nothing. A HUC8 map takes one request per
   ``return_periods.BATCH_SIZE`` reaches, all reserved before the first is sent.
-- Mapbox: one map load, the unit Mapbox bills GL JS by. Each Mapbox map the
-  page creates (the basemap and the NWM reaches make one each) reports itself
-  to ``api/usage/mapbox-load``. Once the month is used up the home page stops
-  handing out the token, so pages already open may finish their own loads but
-  new ones get the free basemaps only.
+- Mapbox: one map load, the unit Mapbox bills GL JS by. A page makes at most
+  ``MAPBOX_LOADS_PER_PAGE``: the basemap and the NWM reaches each create their
+  map once and reuse it. The home page reserves that many before it hands out
+  the token, and leaves the token out once they can't be reserved. A page
+  that shows Streets or hides the reaches is still charged for both, so the
+  count can run ahead of Mapbox's own but never behind it.
 
 Each API has its own limit, which resets on the 1st of every month (UTC).
-``BYU_API_MONTHLY_LIMIT`` (environment or keys file) changes it from 500.
+It is on unless turned off, so a portal is limited without any setup.
+``BYU_API_MONTHLY_LIMIT`` (environment or keys file) changes it from 500;
+``off`` turns it off, for a development copy that doesn't share the portal's
+allowance. Calls are still counted when it is off.
 """
 
 import logging
@@ -41,6 +45,8 @@ APIS = (MAPBOX, CIROH)
 
 LIMIT_ENV = "BYU_API_MONTHLY_LIMIT"
 DEFAULT_LIMIT = 500
+UNLIMITED = ("off", "none", "unlimited")
+MAPBOX_LOADS_PER_PAGE = 2
 
 # Worded for the person who hit the limit: what is off, whose account it is,
 # and when it comes back.
@@ -71,11 +77,17 @@ def next_reset(month: str) -> date:
     return date(year + mon // 12, mon % 12 + 1, 1)
 
 
-def monthly_limit() -> int:
-    """Calls allowed per API per month: ``BYU_API_MONTHLY_LIMIT``, else 500."""
+def monthly_limit() -> Optional[int]:
+    """Calls allowed per API per month: ``BYU_API_MONTHLY_LIMIT``, else 500.
+
+    None when the limit is turned off. Anything unreadable falls back to 500,
+    so a typo can never lift the limit.
+    """
     value = local_keys.get(LIMIT_ENV)
     if value is None:
         return DEFAULT_LIMIT
+    if value.lower() in UNLIMITED:
+        return None
     try:
         limit = int(value)
     except ValueError:
@@ -139,7 +151,7 @@ class UsageCounter:
     def check(self, api: str) -> None:
         """Raise UsageLimitReached if this month's calls to ``api`` are used up."""
         month, limit = current_month(), monthly_limit()
-        if self.used(api, month) >= limit:
+        if limit is not None and self.used(api, month) >= limit:
             raise UsageLimitReached(api, limit, month)
 
     def reserve(self, api: str, calls: int = 1) -> int:
@@ -147,32 +159,20 @@ class UsageCounter:
         would go past the limit. All or nothing; returns the month's new total.
 
         The conditional UPDATE is atomic, so concurrent reservations from
-        different processes can never push the count past the limit.
+        different processes can never push the count past the limit. With the
+        limit off, the calls are counted and never refused.
         """
         month, limit = current_month(), monthly_limit()
         self._ensure_row(api, month)
         with self.session() as session:
-            updated = (
-                session.query(ApiUsage)
-                .filter(ApiUsage.api == api, ApiUsage.month == month,
-                        ApiUsage.calls + calls <= limit)
-                .update({ApiUsage.calls: ApiUsage.calls + calls}, synchronize_session=False)
+            query = session.query(ApiUsage).filter(ApiUsage.api == api, ApiUsage.month == month)
+            if limit is not None:
+                query = query.filter(ApiUsage.calls + calls <= limit)
+            updated = query.update(
+                {ApiUsage.calls: ApiUsage.calls + calls}, synchronize_session=False
             )
         if updated != 1:
             raise UsageLimitReached(api, limit, month)
-        return self.used(api, month)
-
-    def record(self, api: str, calls: int = 1) -> int:
-        """Count ``calls`` already made, limit or not; returns the month's new total.
-
-        For Mapbox map loads, which the browser reports after the fact.
-        """
-        month = current_month()
-        self._ensure_row(api, month)
-        with self.session() as session:
-            session.query(ApiUsage).filter(
-                ApiUsage.api == api, ApiUsage.month == month
-            ).update({ApiUsage.calls: ApiUsage.calls + calls}, synchronize_session=False)
         return self.used(api, month)
 
     def summary(self) -> dict:

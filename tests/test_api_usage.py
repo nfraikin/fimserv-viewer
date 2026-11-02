@@ -40,8 +40,13 @@ class LimitTests(unittest.TestCase):
         self.keys.write_text("BYU_API_MONTHLY_LIMIT=250\n", encoding="utf-8")
         self.assertEqual(api_usage.monthly_limit(), 250)
 
+    def test_off_turns_it_off(self):
+        for off in ("off", "OFF", "none", "unlimited"):
+            with self.subTest(off=off), mock.patch.dict("os.environ", {api_usage.LIMIT_ENV: off}):
+                self.assertIsNone(api_usage.monthly_limit())
+
     def test_nonsense_falls_back_to_default(self):
-        for bad in ("lots", "-1", "2.5"):
+        for bad in ("lots", "-1", "2.5", "of"):
             with self.subTest(bad=bad), mock.patch.dict("os.environ", {api_usage.LIMIT_ENV: bad}):
                 self.assertEqual(api_usage.monthly_limit(), 500)
 
@@ -99,15 +104,24 @@ class UsageCounterTests(unittest.TestCase):
             self.assertEqual(self.counter.reserve(CIROH), 1)
 
     def test_check_refuses_only_once_used_up(self):
-        self.counter.record(MAPBOX, 2)
-        self.counter.check(MAPBOX)
-        self.counter.record(MAPBOX)
-        with self.assertRaisesRegex(UsageLimitReached, "Mapbox"):
-            self.counter.check(MAPBOX)
+        self.counter.reserve(CIROH, 2)
+        self.counter.check(CIROH)
+        self.counter.reserve(CIROH)
+        with self.assertRaisesRegex(UsageLimitReached, "CIROH"):
+            self.counter.check(CIROH)
 
-    def test_record_counts_past_the_limit(self):
-        # Map loads are reported after they happen, so every one is counted.
-        self.assertEqual(self.counter.record(MAPBOX, 5), 5)
+    def test_a_page_needs_both_its_mapbox_loads(self):
+        # Limit 3: the first page takes 2, and the 1 left can't cover another.
+        self.counter.reserve(MAPBOX, api_usage.MAPBOX_LOADS_PER_PAGE)
+        with self.assertRaisesRegex(UsageLimitReached, "Mapbox"):
+            self.counter.reserve(MAPBOX, api_usage.MAPBOX_LOADS_PER_PAGE)
+        self.assertEqual(self.counter.used(MAPBOX), 2)
+
+    def test_off_counts_but_never_refuses(self):
+        with mock.patch.dict("os.environ", {api_usage.LIMIT_ENV: "off"}):
+            self.assertEqual(self.counter.reserve(CIROH, 10), 10)
+            self.counter.check(CIROH)
+            self.assertIsNone(self.counter.summary()["limit"])
 
 
 if __name__ == "__main__":

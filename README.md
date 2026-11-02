@@ -398,13 +398,23 @@ next month (UTC):
 
 | API | What counts as one use | Once the month is used up |
 |---|---|---|
-| Mapbox | One map load: each Mapbox map a page creates (the basemap and the NWM reaches make one each) | New pages get no token, so they start on Streets with no NWM reaches |
+| Mapbox | One map load. A page can make two (the basemap and the NWM reaches), so each page is charged two before it gets the token, even if it shows Streets | New pages get no token, so they start on Streets with no NWM reaches |
 | CIROH NWM API | One request to the return-period API (cached answers are free; a HUC8 map takes one per 500 reaches) | Hydrograph return-period lines and the Return Period tab are unavailable |
 
-`GET /apps/fimserve-viewer/api/usage/` shows this month's counts. Each portal
-keeps its own count, with a default limit of 500. Any other portal or
-development copy running on the same keys must set `BYU_API_MONTHLY_LIMIT` (in
-`keys.env` or the environment) so all the limits together stay within 500.
+Calls are reserved before they are made, so a portal never goes past its
+limit. `GET /apps/fimserve-viewer/api/usage/` shows this month's counts.
+
+The limit is on unless turned off, so a portal such as tethys.ciroh.org is
+limited to 500 with no setup. On your own computer, add this line to
+`keys.env` to turn it off (use is still counted):
+
+```
+BYU_API_MONTHLY_LIMIT=off
+```
+
+A number instead of `off` sets a different limit. Each portal keeps its own
+count, so any second portal on the same keys needs a limit of its own, with
+the two adding up to 500.
 
 ## Git LFS (for contributors)
 

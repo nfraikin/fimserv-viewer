@@ -112,15 +112,16 @@ def home(request):
 
     The Mapbox token comes from the keys file (see ``local_keys``), not the
     code. It is a public token, made for the browser; without one the page
-    leaves out the Mapbox basemap and NWM reaches. It is also left out once
-    this month's BYU-provided map loads are used up (see ``api_usage``), and
-    the page says why.
+    leaves out the Mapbox basemap and NWM reaches. The page's map loads are
+    counted against BYU's monthly limit before the token goes out, and once
+    they can't be, the token is left out and the page says why (see
+    ``api_usage``).
     """
     token = local_keys.get("MAPBOX_TOKEN") or ""
     limit_message = ""
     if token:
         try:
-            api_usage.counter().check(api_usage.MAPBOX)
+            api_usage.counter().reserve(api_usage.MAPBOX, api_usage.MAPBOX_LOADS_PER_PAGE)
         except api_usage.UsageLimitReached as exc:
             token, limit_message = "", str(exc)
     return App.render(
@@ -137,18 +138,6 @@ def home(request):
 def usage_summary(request):
     """This month's Mapbox map loads and CIROH calls against BYU's limit."""
     return JsonResponse({"status": "success", **api_usage.counter().summary()})
-
-
-@controller(url="api/usage/mapbox-load")
-@csrf_exempt
-def record_mapbox_load(request):
-    """Count one Mapbox map load, reported by the page as it creates a Mapbox map."""
-    if request.method != "POST":
-        return HttpResponseNotAllowed(["POST"])
-    used = api_usage.counter().record(api_usage.MAPBOX)
-    return JsonResponse(
-        {"status": "success", "used": used, "limit": api_usage.monthly_limit()}
-    )
 
 
 # =============================================================================

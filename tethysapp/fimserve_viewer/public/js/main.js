@@ -24,8 +24,8 @@ const map = L.map('map', {
 // Mapbox basemap and NWM reaches are left out and Streets is the default.
 //
 // BYU shares the token for a limited number of map loads a month (see
-// api_usage.py). Each Mapbox map the page creates reports itself, and once the
-// month is used up the server sends a message instead of the token.
+// api_usage.py). The server counts this page's loads before sending the token,
+// and once the month is used up it sends a message instead.
 const MAPBOX_TOKEN = (window.APP_STATIC && window.APP_STATIC.mapboxToken) || '';
 const MAPBOX_LIMIT_MESSAGE = (window.APP_STATIC && window.APP_STATIC.mapboxLimitMessage) || '';
 if (MAPBOX_LIMIT_MESSAGE) {
@@ -42,27 +42,11 @@ const USGS_ATTRIBUTION = 'Imagery: <a href="https://www.usgs.gov/programs/nation
  *  No padding: the plugin draws a margin around the view, and a margin past
  *  the edge of the world makes Mapbox shift its view away from Leaflet's. */
 function mapboxLayer(options, LayerClass) {
-    return new (countedMapboxClass(LayerClass || L.MapboxGL))(Object.assign({
+    return new (LayerClass || L.MapboxGL)(Object.assign({
         accessToken: MAPBOX_TOKEN,
         projection: 'mercator',
         padding: 0,
     }, options));
-}
-
-/** LayerClass, telling the server of each Mapbox map it creates: one map load.
- *  The plugin creates a layer's map the first time it is shown and reuses it
- *  after, so a page makes at most one load per Mapbox layer. */
-function countedMapboxClass(LayerClass) {
-    return LayerClass.extend({
-        _initGL: function () {
-            const isNew = !this._glMap;
-            LayerClass.prototype._initGL.call(this);
-            if (isNew) {
-                fetch('./api/usage/mapbox-load/', { method: 'POST', keepalive: true })
-                    .catch(function () { /* the load goes uncounted; the page still works */ });
-            }
-        },
-    });
 }
 
 /** A dismissible note in the map's lower left, e.g. the Mapbox limit message. */
