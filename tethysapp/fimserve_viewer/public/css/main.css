@@ -167,14 +167,96 @@ body {
 }
 
 .huc8-code {
+    display: block;
     font-size: 28px;
     font-weight: bold;
     color: #2980b9;
-    text-align: center;
-    padding: 15px;
+    line-height: 1.15;
+}
+
+/* The basin facts fold under the HUC8 badge, which is the button that opens them. */
+.basin-details {
+    margin-bottom: 20px;
+}
+
+.basin-summary {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 12px 15px;
     background: #ecf0f1;
     border-radius: 8px;
-    margin-bottom: 20px;
+    cursor: pointer;
+    list-style: none;
+    user-select: none;
+    transition: background 0.15s;
+}
+
+.basin-summary::-webkit-details-marker {
+    display: none;
+}
+
+.basin-summary:hover {
+    background: #e2e8eb;
+}
+
+.basin-summary:focus-visible {
+    outline: 2px solid #2980b9;
+    outline-offset: 2px;
+}
+
+.basin-summary-text {
+    min-width: 0;
+}
+
+.basin-summary-name {
+    display: block;
+    margin-top: 2px;
+    font-size: 13px;
+    color: #5d6d7e;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.basin-summary-toggle {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-shrink: 0;
+    font-size: 12px;
+    font-weight: 600;
+    color: #2980b9;
+}
+
+.basin-summary-hint::after {
+    content: 'Show details';
+}
+
+.basin-details[open] .basin-summary-hint::after {
+    content: 'Hide details';
+}
+
+.basin-chevron {
+    width: 8px;
+    height: 8px;
+    border-right: 2px solid currentColor;
+    border-bottom: 2px solid currentColor;
+    transform: translateY(-2px) rotate(45deg);
+    transition: transform 0.15s;
+}
+
+.basin-details[open] .basin-chevron {
+    transform: translateY(2px) rotate(-135deg);
+}
+
+.basin-details-body {
+    padding: 15px 0 0;
+}
+
+.basin-details-body .info-section:last-child {
+    margin-bottom: 5px;
 }
 
 .loading {
