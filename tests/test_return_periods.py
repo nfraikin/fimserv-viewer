@@ -1,7 +1,8 @@
 """Tests for fetching NWM return periods from the CIROH NWM API.
 
 No network: ``requests.get`` is patched with a canned response shaped like
-the API's JSON (a list of one record per reach, flows in m³/s).
+the API's JSON (a list of one record per reach, flows in m³/s). Calls are
+counted against BYU's monthly limit in an in-memory database.
 
 Run with:  python -m unittest discover -s tests
 """
@@ -12,9 +13,13 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+from sqlalchemy.pool import StaticPool
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from tethysapp.fimserve_viewer import local_keys, return_periods  # noqa: E402
+from tethysapp.fimserve_viewer import api_usage, local_keys, return_periods  # noqa: E402
 
 RECORD = {
     "feature_id": 13463951,
@@ -49,6 +54,19 @@ class ParseResponseTests(unittest.TestCase):
             return_periods.parse_response([{"feature_id": 7}], "7")
 
 
+def use_usage_counter(test, limit=10):
+    """Count the test's CIROH calls in a fresh in-memory database, ``limit`` a month."""
+    engine = create_engine("sqlite://", poolclass=StaticPool, connect_args={"check_same_thread": False})
+    patchers = (
+        mock.patch.object(api_usage, "_counter", api_usage.UsageCounter(sessionmaker(bind=engine))),
+        mock.patch.dict("os.environ", {api_usage.LIMIT_ENV: str(limit)}),
+    )
+    for patcher in patchers:
+        patcher.start()
+        test.addCleanup(patcher.stop)
+    return api_usage._counter
+
+
 class ApiKeyTests(unittest.TestCase):
     def setUp(self):
         # A keys file of the test's own, so the real one is never read.
@@ -78,6 +96,7 @@ class ApiKeyTests(unittest.TestCase):
 class GetReturnPeriodsTests(unittest.TestCase):
     def setUp(self):
         return_periods._cache.clear()
+        self.counter = use_usage_counter(self, limit=1)
 
     def test_sends_key_as_header_and_caches(self):
         resp = mock.Mock()
@@ -89,6 +108,15 @@ class GetReturnPeriodsTests(unittest.TestCase):
         get.assert_called_once()
         self.assertEqual(get.call_args.kwargs["headers"], {"x-api-key": "k"})
         self.assertEqual(get.call_args.kwargs["params"]["comids"], "13463951")
+        # The cached second answer cost nothing.
+        self.assertEqual(self.counter.used(api_usage.CIROH), 1)
+
+    def test_no_request_once_the_month_is_used_up(self):
+        self.counter.reserve(api_usage.CIROH)
+        with mock.patch.object(return_periods.requests, "get") as get:
+            with self.assertRaisesRegex(api_usage.UsageLimitReached, "BYU Hydroinformatics"):
+                return_periods.get_return_periods(13463951, "k")
+        get.assert_not_called()
 
     def test_http_error_is_not_cached(self):
         resp = mock.Mock()
@@ -111,6 +139,9 @@ class ValidateYearsTests(unittest.TestCase):
 
 
 class FetchPeriodFlowsTests(unittest.TestCase):
+    def setUp(self):
+        self.counter = use_usage_counter(self, limit=2)
+
     def response(self, records):
         resp = mock.Mock()
         resp.json.return_value = records
@@ -136,6 +167,16 @@ class FetchPeriodFlowsTests(unittest.TestCase):
         self.assertNotIn(2, flows)
         self.assertEqual(flows[1], 1.5)
         self.assertEqual(len(flows), len(ids) - 1)
+        self.assertEqual(self.counter.used(api_usage.CIROH), 2)
+
+    def test_too_few_calls_left_for_every_batch_sends_none(self):
+        self.counter.reserve(api_usage.CIROH)
+        ids = list(range(1, return_periods.BATCH_SIZE + 3))  # two batches, one call left
+        with mock.patch.object(return_periods.requests, "get") as get:
+            with self.assertRaises(api_usage.UsageLimitReached):
+                return_periods.fetch_period_flows(ids, 10, "k")
+        get.assert_not_called()
+        self.assertEqual(self.counter.used(api_usage.CIROH), 1)
 
     def test_http_error_propagates(self):
         resp = mock.Mock()

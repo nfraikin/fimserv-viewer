@@ -22,8 +22,15 @@ const map = L.map('map', {
 // reach tileset. The server reads it from the keys file (local_keys.py) rather
 // than the code, where GitHub's push protection rejects it; without one, the
 // Mapbox basemap and NWM reaches are left out and Streets is the default.
+//
+// BYU shares the token for a limited number of map loads a month (see
+// api_usage.py). The server counts this page's loads before sending the token,
+// and once the month is used up it sends a message instead.
 const MAPBOX_TOKEN = (window.APP_STATIC && window.APP_STATIC.mapboxToken) || '';
-if (!MAPBOX_TOKEN) {
+const MAPBOX_LIMIT_MESSAGE = (window.APP_STATIC && window.APP_STATIC.mapboxLimitMessage) || '';
+if (MAPBOX_LIMIT_MESSAGE) {
+    showMapNotice(MAPBOX_LIMIT_MESSAGE);
+} else if (!MAPBOX_TOKEN) {
     console.warn('No MAPBOX_TOKEN in ~/.fimserve_viewer/keys.env: the Mapbox basemap and NWM reaches are off.');
 }
 const MAPBOX_ATTRIBUTION = '© <a href="https://www.mapbox.com/about/maps/">Mapbox</a> © <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>';
@@ -40,6 +47,25 @@ function mapboxLayer(options, LayerClass) {
         projection: 'mercator',
         padding: 0,
     }, options));
+}
+
+/** A dismissible note in the map's lower left, e.g. the Mapbox limit message. */
+function showMapNotice(message) {
+    const notice = L.control({ position: 'bottomleft' });
+    notice.onAdd = function () {
+        const div = L.DomUtil.create('div', 'map-notice');
+        div.setAttribute('role', 'status');
+        const text = L.DomUtil.create('span', '', div);
+        text.textContent = message;
+        const close = L.DomUtil.create('button', 'map-notice-close', div);
+        close.type = 'button';
+        close.setAttribute('aria-label', 'Dismiss');
+        close.textContent = '×';
+        L.DomEvent.disableClickPropagation(div);
+        L.DomEvent.on(close, 'click', function () { notice.remove(); });
+        return div;
+    };
+    notice.addTo(map);
 }
 
 /** Mapbox will not zoom out past where the world fills the map's height (it
@@ -2187,6 +2213,7 @@ async function fetchJobJson(url, options) {
         // restarting — transient, so callers may retry.
         const e = new Error((result && result.message) || response.statusText || ('HTTP ' + response.status));
         e.retryable = response.status >= 500;
+        e.byuLimit = !!(result && result.reason === 'byu_limit');
         throw e;
     }
     if (parseErr || !result || result.status !== 'success') {
@@ -2954,7 +2981,10 @@ async function generateReturnPeriodFloodMap(huc8) {
         await watchFloodJob(huc8, job);
     } catch (error) {
         floodGenerateOverlayHide();
-        setFloodStatus('<span style="color: #e74c3c;">Error: ' + escapeHtml(error.message) + '</span>', 'rp');
+        // BYU's monthly CIROH calls are used up: a notice, not a failure.
+        setFloodStatus(error.byuLimit
+            ? '<span style="color: #7f8c8d;">' + escapeHtml(error.message) + '</span>'
+            : '<span style="color: #e74c3c;">Error: ' + escapeHtml(error.message) + '</span>', 'rp');
     }
 }
 

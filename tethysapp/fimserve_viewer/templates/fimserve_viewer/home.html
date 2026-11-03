@@ -110,7 +110,9 @@
       tgfLogo:         "{% static 'fimserve_viewer/images/TGF-Logo.png' %}",
       huc8GeoJsonUrl:  "./api/all-huc8-geojson/",
       {# From ~/.fimserve_viewer/keys.env on the server, never the repo. #}
-      mapboxToken:     "{{ mapbox_token|escapejs }}"
+      mapboxToken:     "{{ mapbox_token|escapejs }}",
+      {# Set, and the token left out, once BYU's monthly map loads are used up. #}
+      mapboxLimitMessage: "{{ mapbox_limit_message|escapejs }}"
     };
   </script>
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>

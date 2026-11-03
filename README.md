@@ -387,6 +387,35 @@ On macOS / Linux, make the file readable only by you: `chmod 600 ~/.fimserve_vie
 An environment variable of the same name works too, and wins over the file. To
 keep the file somewhere else, set `FIMSERVE_VIEWER_KEYS` to its path.
 
+### Monthly limit on BYU's keys
+
+The Mapbox token and CIROH key this app has been shared with are BYU
+Hydroinformatics' own, provided on the condition that each is used at most 500
+times a month in total, across every portal that runs the app. The app counts
+every use in its database, separately per API, and once a month's limit is used
+up it turns that feature off with a message saying so, until the 1st of the
+next month (UTC):
+
+| API | What counts as one use | Once the month is used up |
+|---|---|---|
+| Mapbox | One map load. A page can make two (the basemap and the NWM reaches), so each page is charged two before it gets the token, even if it shows Streets | New pages get no token, so they start on Streets with no NWM reaches |
+| CIROH NWM API | One request to the return-period API (cached answers are free; a HUC8 map takes one per 500 reaches) | Hydrograph return-period lines and the Return Period tab are unavailable |
+
+Calls are reserved before they are made, so a portal never goes past its
+limit. `GET /apps/fimserve-viewer/api/usage/` shows this month's counts.
+
+The limit is on unless turned off, so a portal such as tethys.ciroh.org is
+limited to 500 with no setup. On your own computer, add this line to
+`keys.env` to turn it off (use is still counted):
+
+```
+BYU_API_MONTHLY_LIMIT=off
+```
+
+A number instead of `off` sets a different limit. Each portal keeps its own
+count, so any second portal on the same keys needs a limit of its own, with
+the two adding up to 500.
+
 ## Git LFS (for contributors)
 
 This repo ships a 57 MB watershed-boundaries file
