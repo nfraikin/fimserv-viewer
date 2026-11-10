@@ -65,8 +65,13 @@ class MonthTests(unittest.TestCase):
             with self.subTest(api=api):
                 message = api_usage.limit_message(api, 500, "2026-12")
                 self.assertIn("BYU Hydroinformatics", message)
-                self.assertIn("500", message)
+                self.assertIn("limit", message)
                 self.assertIn("January 1", message)
+
+    def test_message_leaves_out_the_number(self):
+        for api in (MAPBOX, CIROH):
+            with self.subTest(api=api):
+                self.assertNotIn("500", api_usage.limit_message(api, 500, "2026-12"))
 
 
 class UsageCounterTests(unittest.TestCase):

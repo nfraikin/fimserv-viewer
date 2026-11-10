@@ -49,19 +49,18 @@ UNLIMITED = ("off", "none", "unlimited")
 MAPBOX_LOADS_PER_PAGE = 2
 
 # Worded for the person who hit the limit: what is off, whose account it is,
-# and when it comes back.
+# and when it comes back. The limit itself is left out.
 _MESSAGES = {
     MAPBOX: (
-        "The Mapbox basemap and NWM river reaches run on a Mapbox account that "
-        "BYU Hydroinformatics provides, shared with this app for up to {limit} "
-        "map loads a month. This month's map loads have all been used, so the "
-        "other basemaps are shown instead until {reset}. Thank you for understanding!"
+        "The Mapbox basemap and NWM river reaches are provided by BYU "
+        "Hydroinformatics, with a monthly limit on their use. This month's limit "
+        "has been reached, so they will be back on {reset}. Thank you for understanding!"
     ),
     CIROH: (
-        "Return-period flows come from the CIROH NWM API through an account that "
-        "BYU Hydroinformatics provides, shared with this app for up to {limit} "
-        "calls a month. This month's calls have all been used, so return periods "
-        "are unavailable until {reset}. Thank you for understanding!"
+        "Return-period flows from the CIROH NWM API are provided by BYU "
+        "Hydroinformatics, with a monthly limit on their use. This month's limit "
+        "has been reached, so return periods will be back on {reset}. Thank you "
+        "for understanding!"
     ),
 }
 

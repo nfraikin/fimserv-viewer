@@ -816,9 +816,15 @@ def return_period_options(request):
     """The periods on offer and, with ``?huc8=``, which already have a map.
 
     Also reports whether the HUC's hydrofabric is on disk, so the page can
-    warn about the first-run download and knows the outlet can be found.
+    warn about the first-run download and knows the outlet can be found, and,
+    once BYU's monthly CIROH calls are used up, the message saying so, so the
+    page can turn off Generate (maps made before can still be shown).
     """
     payload = {"status": "success", "years": list(return_periods.RETURN_PERIOD_YEARS)}
+    try:
+        api_usage.counter().check(api_usage.CIROH)
+    except api_usage.UsageLimitReached as exc:
+        payload["byu_limit_message"] = str(exc)
     huc8 = request.GET.get("huc8")
     if huc8:
         try:
