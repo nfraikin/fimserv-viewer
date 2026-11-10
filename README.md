@@ -398,8 +398,8 @@ next month (UTC):
 
 | API | What counts as one use | Once the month is used up |
 |---|---|---|
-| Mapbox | One map load. A page can make two (the basemap and the NWM reaches), so each page is charged two before it gets the token, even if it shows Streets | New pages get no token, so they start on Streets with no NWM reaches |
-| CIROH NWM API | One request to the return-period API (cached answers are free; a HUC8 map takes one per 500 reaches) | Hydrograph return-period lines and the Return Period tab are unavailable |
+| Mapbox | One map load. A page can make two (the basemap and the NWM reaches), so each page is charged two before it gets the token, even if it shows Streets | New pages get no token, so they start on Streets with no NWM reaches, and the layers panel says why |
+| CIROH NWM API | One request to the return-period API (cached answers are free; a HUC8 map takes one per 500 reaches) | No new return-period maps (Generate is greyed out with a note saying why; maps made before can still be shown and downloaded), and no hydrograph return-period lines for reaches not looked up recently |
 
 Calls are reserved before they are made, so a portal never goes past its
 limit. `GET /apps/fimserve-viewer/api/usage/` shows this month's counts.

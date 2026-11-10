@@ -28,9 +28,7 @@ const map = L.map('map', {
 // and once the month is used up it sends a message instead.
 const MAPBOX_TOKEN = (window.APP_STATIC && window.APP_STATIC.mapboxToken) || '';
 const MAPBOX_LIMIT_MESSAGE = (window.APP_STATIC && window.APP_STATIC.mapboxLimitMessage) || '';
-if (MAPBOX_LIMIT_MESSAGE) {
-    showMapNotice(MAPBOX_LIMIT_MESSAGE);
-} else if (!MAPBOX_TOKEN) {
+if (!MAPBOX_TOKEN && !MAPBOX_LIMIT_MESSAGE) {
     console.warn('No MAPBOX_TOKEN in ~/.fimserve_viewer/keys.env: the Mapbox basemap and NWM reaches are off.');
 }
 const MAPBOX_ATTRIBUTION = '© <a href="https://www.mapbox.com/about/maps/">Mapbox</a> © <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>';
@@ -49,23 +47,13 @@ function mapboxLayer(options, LayerClass) {
     }, options));
 }
 
-/** A dismissible note in the map's lower left, e.g. the Mapbox limit message. */
-function showMapNotice(message) {
-    const notice = L.control({ position: 'bottomleft' });
-    notice.onAdd = function () {
-        const div = L.DomUtil.create('div', 'map-notice');
-        div.setAttribute('role', 'status');
-        const text = L.DomUtil.create('span', '', div);
-        text.textContent = message;
-        const close = L.DomUtil.create('button', 'map-notice-close', div);
-        close.type = 'button';
-        close.setAttribute('aria-label', 'Dismiss');
-        close.textContent = '×';
-        L.DomEvent.disableClickPropagation(div);
-        L.DomEvent.on(close, 'click', function () { notice.remove(); });
-        return div;
-    };
-    notice.addTo(map);
+/** A note at the foot of the layers panel, e.g. the Mapbox limit message.
+ *  It shows when the panel opens, rather than sitting over the map. */
+function addLayersNotice(layersControl, message) {
+    const list = layersControl.getContainer().querySelector('.leaflet-control-layers-list');
+    const note = L.DomUtil.create('div', 'layers-notice', list);
+    note.setAttribute('role', 'note');
+    note.textContent = message;
 }
 
 /** Mapbox will not zoom out past where the world fills the map's height (it
@@ -259,7 +247,9 @@ const OVERLAYS_OFF_KEY = 'fimserve_viewer.overlaysOff';
     Object.keys(OVERLAYS).forEach(function (overlay) {
         if (!overlaysOff.includes(overlay)) OVERLAYS[overlay].addTo(map);
     });
-    L.control.layers(BASEMAPS, OVERLAYS, { position: 'topleft' }).addTo(map);
+    const layersControl = L.control.layers(BASEMAPS, OVERLAYS, { position: 'topleft' }).addTo(map);
+    // In the layers panel, where the Mapbox layers would have been listed.
+    if (MAPBOX_LIMIT_MESSAGE) addLayersNotice(layersControl, MAPBOX_LIMIT_MESSAGE);
     map.on('baselayerchange', function (e) {
         try {
             localStorage.setItem(BASEMAP_KEY, e.name);
@@ -2186,6 +2176,7 @@ function setGenerateButtonBusy(busy, mode) {
     btn.textContent = busy ? 'Generating…' : ui.buttonLabel;
     // The forecast button also needs an hour to generate for.
     btn.disabled = busy || (mode === 'forecast' && !selectedForecastHour());
+    if (!busy && mode === 'rp') renderReturnPeriodPicker();
 }
 
 function floodJobSleep(ms) {
@@ -2852,10 +2843,11 @@ function returnPeriodSectionHtml(huc8) {
                 <p id="rp-outlet-note" class="forecast-hint"></p>
                 <p class="forecast-hint">Each reach floods at its own flow for the chosen period: the NWM retrospective's flood-frequency flows, from the CIROH NWM API. Reaches inside reservoirs have none and are left unmapped.</p>
                 <p id="rp-warm-note" class="forecast-hint forecast-warn" hidden>This watershed's HAND data isn't cached yet, so the first run downloads it before mapping (about 5&ndash;15 minutes).</p>
+                <div id="rp-limit-note" class="rp-limit-note" role="alert" hidden></div>
+                <button id="rp-show-btn" class="forecast-btn forecast-btn--generate" onclick="showFloodMapOnMapReturnPeriod('${huc8}')" hidden>Show on map</button>
                 <button id="rp-generate-btn" class="forecast-btn forecast-btn--generate" onclick="generateReturnPeriodFloodMap('${huc8}')" disabled>Generate Return-Period Flood Map</button>
                 <button id="rp-download-btn" class="forecast-btn forecast-btn--download" onclick="downloadProcessedReturnPeriodMap('${huc8}')" disabled>Download processed (reclassified)</button>
                 <p class="forecast-hint">Reclassifies: flooded &rarr; 1, no flood &rarr; 0.</p>
-                <button id="rp-show-btn" class="forecast-btn forecast-btn--show" onclick="showFloodMapOnMapReturnPeriod('${huc8}')" disabled>Show on map</button>
                 <div id="rp-flood-map-status" class="forecast-status"></div>
             </div>
         </div>`;
@@ -2928,6 +2920,9 @@ function renderReturnPeriodPicker() {
     const generated = opts.generated || [];
     const flows = {};
     ((rpState.outlet && rpState.outlet.return_periods) || []).forEach(function (rp) { flows[rp.years] = rp.value; });
+    // Once BYU's monthly CIROH calls are used up, new maps can't be made, but
+    // ones made before can still be shown and downloaded.
+    const limitMessage = opts.byu_limit_message || '';
     const rows = opts.years.map(function (y) {
         return { years: y, value: flows[y], ready: generated.indexOf(y) >= 0 };
     });
@@ -2935,16 +2930,42 @@ function renderReturnPeriodPicker() {
         pickable: true,
         flowHeading: 'Outlet flow',
         pending: rpState.outletStatus === 'loading' ? '…' : '–',
+        fadeUnready: !!limitMessage,
     });
 
     const ready = !!years && generated.indexOf(years) >= 0;
+    const limitNote = document.getElementById('rp-limit-note');
+    if (limitNote) {
+        limitNote.innerHTML = limitMessage
+            ? '<p>' + escapeHtml(limitMessage) + '</p><p>' + returnPeriodReadyNote(opts.years.filter(function (y) {
+                return generated.indexOf(y) >= 0;
+            })) + '</p>'
+            : '';
+        limitNote.hidden = !limitMessage;
+    }
+    // A period with a map leads with Show on map; making it again drops to a
+    // small link under it.
+    const show = document.getElementById('rp-show-btn');
+    if (show) show.hidden = !ready;
     const gen = document.getElementById('rp-generate-btn');
-    if (gen && gen.dataset.busy !== '1') gen.disabled = !years;
-    ['rp-download-btn', 'rp-show-btn'].forEach(function (id) {
-        const el = document.getElementById(id);
-        if (el) el.disabled = !ready;
-    });
+    if (gen && gen.dataset.busy !== '1') {
+        gen.disabled = !years || !!limitMessage;
+        gen.textContent = ready ? 'Make this map again' : FLOOD_MODE_UI.rp.buttonLabel;
+        gen.className = 'forecast-btn ' + (ready ? 'forecast-btn--again' : 'forecast-btn--generate');
+    }
+    const download = document.getElementById('rp-download-btn');
+    if (download) download.disabled = !ready;
     renderReturnPeriodOutletNote();
+}
+
+/** Below the limit message: which of this watershed's maps can still be shown. */
+function returnPeriodReadyNote(readyYears) {
+    if (!readyYears.length) return 'No return-period maps have been made for this watershed yet.';
+    const names = readyYears.map(function (y) { return y + '-year'; });
+    const list = names.length === 1 ? names[0]
+        : names.slice(0, -1).join(', ') + ' and ' + names[names.length - 1];
+    return 'Maps already made for this watershed can still be shown: the ' + list
+        + '. Pick one marked <strong>Map ready</strong> and press Show on map.';
 }
 
 /** Where the flow column comes from, or why it is empty. */
@@ -2981,10 +3002,14 @@ async function generateReturnPeriodFloodMap(huc8) {
         await watchFloodJob(huc8, job);
     } catch (error) {
         floodGenerateOverlayHide();
-        // BYU's monthly CIROH calls are used up: a notice, not a failure.
-        setFloodStatus(error.byuLimit
-            ? '<span style="color: #7f8c8d;">' + escapeHtml(error.message) + '</span>'
-            : '<span style="color: #e74c3c;">Error: ' + escapeHtml(error.message) + '</span>', 'rp');
+        if (error.byuLimit && rpState.options) {
+            // BYU's monthly CIROH calls ran out while the page was open.
+            rpState.options.byu_limit_message = error.message;
+            setFloodStatus('', 'rp');
+            renderReturnPeriodPicker();
+            return;
+        }
+        setFloodStatus('<span style="color: #e74c3c;">Error: ' + escapeHtml(error.message) + '</span>', 'rp');
     }
 }
 
@@ -3069,10 +3094,11 @@ function returnPeriodTableHtml(rows, selected, opts) {
                 + ' onclick="pickReturnPeriod(' + rp.years + ')" onkeydown="returnPeriodPickerKey(event, ' + rp.years + ')"'
             : '';
         const flow = rp.value == null ? (opts.pending || '–') : escapeHtml(formatNumber(hydroDisplayValue(rp.value)));
-        return '<tr class="' + (on ? 'is-selected' : '') + (pickable ? ' is-pickable' : '') + '"' + attrs + '>'
+        return '<tr class="' + (on ? 'is-selected' : '') + (pickable ? ' is-pickable' : '')
+            + (opts.fadeUnready && !rp.ready ? ' is-unavailable' : '') + '"' + attrs + '>'
             + '<td>' + (pickable ? '<span class="rp-radio" aria-hidden="true"></span>' : '')
             + '<span class="rp-swatch" style="background:' + returnPeriodColor(rp.years) + '"></span>' + rp.years + '-year'
-            + (rp.ready ? ' <span class="rp-ready" title="This map is already made: Show on map, or generate it again">&check; ready</span>' : '')
+            + (rp.ready ? ' <span class="rp-ready" title="This map is already made: press Show on map">&check; Map ready</span>' : '')
             + '</td>'
             + '<td>' + (100 / rp.years) + '%</td>'
             + '<td class="rp-flow">' + flow + '</td>'

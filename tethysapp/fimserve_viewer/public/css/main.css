@@ -1051,38 +1051,65 @@ img.flood-raster-crisp.leaflet-image-layer {
 
 .rp-ready {
     display: inline-block;
-    margin-left: 4px;
-    padding: 1px 6px;
-    border-radius: 8px;
-    background: #d4efe7;
-    color: #0e6655;
-    font-size: 10px;
+    margin-left: 6px;
+    padding: 2px 8px;
+    border-radius: 10px;
+    background: #27ae60;
+    color: #fff;
+    font-size: 11px;
     font-weight: 600;
     vertical-align: 1px;
 }
 
-/* A note over the map, e.g. that BYU's monthly Mapbox map loads are used up. */
-.map-notice {
-    display: flex;
-    align-items: flex-start;
-    gap: 8px;
-    max-width: 360px;
-    padding: 10px 12px;
-    background: #fff;
-    border-left: 4px solid #3498db;
-    border-radius: 6px;
-    box-shadow: 0 1px 5px rgba(0,0,0,0.25);
-    font-size: 12px;
-    line-height: 1.4;
-    color: #2c3e50;
+/* Once BYU's monthly CIROH calls are used up, periods without a map can't be
+   made, so the ones that can still be shown stand out. */
+.rp-table tr.is-unavailable td {
+    opacity: 0.45;
 }
 
-.map-notice-close {
-    flex: none;
-    border: none;
+/* Above the Return Period tab's Generate button once BYU's monthly CIROH
+   calls are used up, so it's clear why the button is greyed out. */
+.rp-limit-note {
+    margin-top: 15px;
+    padding: 10px 12px;
+    background: #fdecea;
+    border-left: 4px solid #e74c3c;
+    border-radius: 4px;
+    font-size: 13px;
+    line-height: 1.4;
+    color: #c0392b;
+}
+
+.rp-limit-note p + p {
+    margin-top: 6px;
+}
+
+/* Generate, for a period that already has a map: a small link under Show on
+   map rather than a second big button. */
+.forecast-btn--again,
+.forecast-btn--again:disabled {
+    padding: 4px;
+    margin-top: 4px;
     background: none;
-    font-size: 16px;
-    line-height: 1;
+    color: #2980b9;
+    font-size: 12px;
+    font-weight: 500;
+    text-decoration: underline;
+}
+
+.forecast-btn--again:disabled {
+    color: #b2bec3;
+    text-decoration: none;
+}
+
+/* A note at the foot of the layers panel, e.g. that BYU's monthly Mapbox map
+   loads are used up. */
+.layers-notice {
+    max-width: 220px;
+    margin-top: 6px;
+    padding-top: 6px;
+    border-top: 1px solid #ddd;
+    font-size: 11px;
+    line-height: 1.4;
     color: #7f8c8d;
-    cursor: pointer;
 }
